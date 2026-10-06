@@ -1,0 +1,9 @@
+.safegrd .safegrd-lede { max-width: 46em; }
+.safegrd .safegrd-card { background: #fff; border: 1px solid #c3c4c7; padding: 4px 20px 16px; max-width: 60em; }
+.safegrd .safegrd-custody { margin: 12px 0; }
+.safegrd .safegrd-custody legend { font-weight: 600; margin-bottom: 6px; }
+.safegrd .safegrd-custody label { display: block; margin: 8px 0; }
+.safegrd .safegrd-custody .description { display: block; margin-left: 24px; }
+.safegrd .safegrd-code { font-family: Menlo, Consolas, monospace; font-size: 1.6em; letter-spacing: .12em; font-weight: 600; }
+.safegrd .safegrd-warn { color: #b32d2e; }
+.safegrd .notice[hidden] { display: none; }
