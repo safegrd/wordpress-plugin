@@ -8,13 +8,13 @@ Stable tag: 0.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Backs up the database and files, encrypted on your server, to locked storage, and test-restores every backup.
+Backs up the database and files, encrypted on your server, to locked storage, and test-restores them on a schedule.
 
 == Description ==
 
 SafeGrd Backup sends one encrypted archive of the site (its database, wp-config.php, .htaccess and wp-content) to SafeGrd's hosted storage, where it is locked against deletion. SafeGrd then test-restores the newest backup on a schedule: it checks the archive decrypts, every table has its rows, every file matches its digest, and every attachment the database names is in the archive.
 
-The free plan covers one site: a backup a day, kept for 7 days, and a test restore each month.
+The free plan covers one site. What each plan includes is at https://safegrd.dev/pricing.
 
 The backup is encrypted with age on this server before it is uploaded. Choose who keeps the key:
 
@@ -41,7 +41,7 @@ With the safegrd command line tool: https://safegrd.dev/docs/surfaces/wordpress#
 
 = Does it back up multisite? =
 
-Not yet. The plugin refuses a multisite network rather than back up part of it.
+The plugin backs up single sites. On a multisite network it backs up nothing and says so on Tools, SafeGrd.
 
 == Changelog ==
 

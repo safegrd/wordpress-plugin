@@ -27,7 +27,7 @@ final class SafeGrd_Site {
 	 */
 	public static function refusal() {
 		if ( is_multisite() ) {
-			return 'This is a multisite network. The plugin backs up single sites only for now, so nothing on this network is backed up.';
+			return 'This is a multisite network. The plugin backs up single sites, so nothing on this network is backed up.';
 		}
 		if ( ! function_exists( 'sodium_crypto_scalarmult' ) || ! function_exists( 'sodium_crypto_aead_chacha20poly1305_ietf_encrypt' ) ) {
 			return 'PHP on this host has no sodium extension, which the plugin encrypts with. PHP 7.2 and newer include it; ask your host to enable it.';
@@ -38,7 +38,7 @@ final class SafeGrd_Site {
 		$active = (array) get_option( 'active_plugins', array() );
 		foreach ( self::OFFLOAD_PLUGINS as $file => $name ) {
 			if ( in_array( $file, $active, true ) ) {
-				return sprintf( '%s is active, so this site\'s media is in object storage rather than on this host. The plugin cannot back up files it cannot read, so it backs up nothing rather than a site without its media.', $name );
+				return sprintf( '%s is active and keeps this site\'s media in object storage, where the plugin cannot read it. A backup without the media would not restore the site, so nothing is backed up.', $name );
 			}
 		}
 		return '';

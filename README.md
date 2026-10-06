@@ -2,8 +2,8 @@
 
 Backs up a WordPress site's database and files to [SafeGrd](https://safegrd.dev), encrypted on
 your server before they leave it, into storage locked against deletion. SafeGrd test-restores
-the backups on a schedule and records each result. The free plan covers one site: a backup a
-day, kept for 7 days, and a test restore each month.
+the newest backup on your plan's schedule and records each result. The free plan covers one
+site; [safegrd.dev/pricing](https://safegrd.dev/pricing) lists what each plan includes.
 
 It is written in PHP and needs nothing installed beside WordPress, so it runs on shared and
 managed hosting: PHP 7.4 or newer with the sodium, zlib and mysqli extensions, which PHP
@@ -75,7 +75,7 @@ Then install the WordPress version it prints, copy `wp-content`, `wp-config.php`
 over it, and point the database settings in `wp-config.php` at the restored database. Full
 steps: [safegrd.dev/docs/surfaces/wordpress](https://safegrd.dev/docs/surfaces/wordpress#restore).
 
-## Limits
+## Long backups on strict hosts
 
 A backup runs in one PHP request started by WP-Cron and streams to storage in 8 MiB parts,
 without writing a copy to disk. A host that stops long requests can stop a large site's backup

@@ -174,7 +174,7 @@
 	if (disconnect) {
 		disconnect.addEventListener("click", function (ev) {
 			ev.preventDefault();
-			if (!window.confirm("Disconnect this site? Backups stop. The backups already taken stay in SafeGrd.")) return;
+			if (!window.confirm("Disconnect this site? It stops backing up, and the backups already taken stay in SafeGrd.")) return;
 			post("safegrd_disconnect", {}).then(function () { window.location.reload(); })
 				.catch(function (e) { notice("error", e.message); });
 		});

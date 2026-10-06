@@ -59,7 +59,7 @@ final class SafeGrd_Admin {
 		$refusal = SafeGrd_Site::refusal();
 		echo '<div class="wrap safegrd">';
 		echo '<h1>SafeGrd Backup</h1>';
-		echo '<p class="safegrd-lede">Backs up this site\'s database and files, encrypted on this server before they leave it, to storage locked against deletion. SafeGrd restores each backup on a schedule to prove it opens.</p>';
+		echo '<p class="safegrd-lede">Backs up this site\'s database and files, encrypted on this server before they leave it, to storage locked against deletion. SafeGrd test-restores the newest backup on your plan\'s schedule and records the result.</p>';
 		if ( '' !== $refusal ) {
 			echo '<div class="notice notice-error inline"><p>' . esc_html( $refusal ) . '</p></div></div>';
 			return;
@@ -77,7 +77,8 @@ final class SafeGrd_Admin {
 		?>
 		<div class="safegrd-card" id="safegrd-connect">
 			<h2>Connect this site</h2>
-			<p>Sign in to SafeGrd, or create a free account, in the tab that opens. The free plan backs up one site once a day to SafeGrd's hosted storage and test-restores it once a month.</p>
+			<p>Sign in to SafeGrd, or create a free account, in the tab that opens.</p>
+			<?php echo wp_kses_post( self::free_plan() ); ?>
 			<fieldset class="safegrd-custody">
 				<legend>Who keeps the encryption key</legend>
 				<label>
@@ -142,6 +143,34 @@ final class SafeGrd_Admin {
 				<a href="#" id="safegrd-disconnect">Disconnect this site</a>. Backups already taken stay in SafeGrd.</p>
 		</div>
 		<?php
+	}
+
+	/**
+	 * What the free plan includes, in the server's own words: the catalogue
+	 * is the server's, so this page never disagrees with what it enforces.
+	 * Nothing when the server cannot be reached.
+	 */
+	private static function free_plan() {
+		$plans = get_transient( 'safegrd_plans' );
+		if ( ! is_array( $plans ) ) {
+			$r = ( new SafeGrd_Client( SafeGrd_Settings::server_url() ) )->call( 'GET', '/api/v1/plans', null, 10 );
+			if ( is_wp_error( $r ) || empty( $r['plans'] ) ) {
+				return '';
+			}
+			$plans = $r['plans'];
+			set_transient( 'safegrd_plans', $plans, DAY_IN_SECONDS );
+		}
+		foreach ( $plans as $p ) {
+			if ( isset( $p['id'] ) && 'free' === $p['id'] ) {
+				return sprintf(
+					'<p>On the free plan: %s %s. Test restores: %s.</p>',
+					esc_html( $p['tagline'] ?? '' ),
+					esc_html( $p['backup_cadence'] ?? '' ),
+					esc_html( strtolower( $p['drill_cadence'] ?? '' ) )
+				);
+			}
+		}
+		return '';
 	}
 
 	/**
