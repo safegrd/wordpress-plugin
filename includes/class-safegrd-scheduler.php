@@ -23,11 +23,13 @@ final class SafeGrd_Scheduler {
 	}
 
 	/**
-	 * Schedules the daily backup, starting about a minute from now.
+	 * Schedules the daily backup, due at once: WP-Cron runs due events on the
+	 * next request to the site, which after connecting from wp-admin is the
+	 * Tools page reloading.
 	 */
 	public static function schedule() {
 		if ( ! wp_next_scheduled( self::HOOK ) ) {
-			wp_schedule_event( time() + MINUTE_IN_SECONDS, 'daily', self::HOOK );
+			wp_schedule_event( time(), 'daily', self::HOOK );
 		}
 	}
 

@@ -17,7 +17,7 @@ includes by default.
 3. Tools, SafeGrd: choose who keeps the key and press **Connect**. Sign in or create an account
    in the tab that opens, and check the code matches.
 
-The first backup runs about a minute later, then once a day.
+The first backup starts right after connecting, then runs once a day.
 
 From WP-CLI:
 

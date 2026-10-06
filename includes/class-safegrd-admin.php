@@ -149,7 +149,7 @@ final class SafeGrd_Admin {
 	 */
 	public static function describe_run( array $run ) {
 		if ( ! $run ) {
-			return 'None yet. The first runs about a minute after connecting, or press Back up now.';
+			return 'None yet. The first starts on the next page load after connecting, or press Back up now.';
 		}
 		switch ( $run['status'] ) {
 			case 'running':

@@ -73,7 +73,7 @@
 					}
 					return;
 				}
-				notice("success", "Connected" + (p.user_email ? " as " + p.user_email : "") + ". The first backup starts in about a minute.");
+				notice("success", "Connected" + (p.user_email ? " as " + p.user_email : "") + ". The first backup is starting.");
 				setTimeout(function () { window.location.reload(); }, 1500);
 			}).catch(function (e) {
 				connectBtn.disabled = false;
