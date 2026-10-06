@@ -109,24 +109,36 @@ final class SafeGrd_CLI {
 	 * @when after_wp_load
 	 */
 	public function backup( $args, $assoc ) {
-		$run = ( new SafeGrd_Backup(
-			function ( $line ) {
-				if ( 0 === strpos( $line, 'Warning: ' ) ) {
-					WP_CLI::warning( substr( $line, 9 ) );
-				} elseif ( 0 !== strpos( $line, 'Error: ' ) ) {
-					WP_CLI::line( $line );
-				}
+		$say = function ( $line ) {
+			if ( 0 === strpos( $line, 'Warning: ' ) ) {
+				WP_CLI::warning( substr( $line, 9 ) );
+			} elseif ( 0 !== strpos( $line, 'Error: ' ) ) {
+				WP_CLI::line( $line );
 			}
-		) )->run();
-		if ( 'busy' === $run['status'] ) {
-			WP_CLI::error( $run['message'] );
-		}
+		};
+		// Slice after slice in this process: the same saved points a site
+		// whose host stops long requests resumes from.
+		$retries = 0;
+		do {
+			$run = ( new SafeGrd_Backup( $say ) )->run( true );
+			if ( 'busy' === $run['status'] ) {
+				WP_CLI::error( $run['message'] . ' Run wp safegrd status to follow it.' );
+			}
+			if ( 'running' === $run['status'] && ! empty( $run['message'] ) ) {
+				if ( ++$retries >= SafeGrd_Backup::ATTEMPTS ) {
+					break;
+				}
+				sleep( 30 * $retries );
+			}
+		} while ( 'running' === $run['status'] );
 		if ( 'completed' !== $run['status'] ) {
-			WP_CLI::error( $run['message'] );
+			WP_CLI::error( isset( $run['message'] ) ? $run['message'] : 'The backup did not complete.' );
 		}
-		WP_CLI::line( sprintf( 'Backed up %s (%s stored, %ss)', $run['snapshot_id'], size_format( $run['bytes'], 1 ), $run['seconds'] ) );
+		$how = 'opening' === $run['class'] ? 'every file, as the month\'s first' : 'only what changed';
+		WP_CLI::line( sprintf( 'Backed up %s (%s uploaded, %s, %ss)', $run['snapshot_id'], size_format( $run['bytes'], 1 ), $how, $run['seconds'] ) );
 		WP_CLI::line( sprintf( '   Database:  %d tables, %d rows', $run['tables'], $run['rows'] ) );
-		WP_CLI::line( sprintf( '   Files:     %d', $run['files'] ) );
+		WP_CLI::line( sprintf( '   Files:     %d (%s)', $run['files'], size_format( $run['raw_bytes'], 1 ) ) );
+		WP_CLI::line( sprintf( '   Slices:    %d', $run['slices'] ) );
 		WP_CLI::line( sprintf( '   Memory:    %s peak', size_format( $run['peak_memory'], 1 ) ) );
 		if ( ! empty( $run['retain'] ) ) {
 			WP_CLI::line( '   Locked until ' . substr( $run['retain'], 0, 10 ) );

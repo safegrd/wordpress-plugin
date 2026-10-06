@@ -182,10 +182,20 @@ final class SafeGrd_Admin {
 		}
 		switch ( $run['status'] ) {
 			case 'running':
-				return 'Running since ' . esc_html( self::when( $run['started_at'] ) ) . '.';
+				$s = sprintf(
+					'Running since %s: %s, %d files read so far, %s uploaded.',
+					esc_html( self::when( $run['started_at'] ) ),
+					'database' === ( $run['stage'] ?? '' ) ? 'dumping the database' : ( 'finish' === ( $run['stage'] ?? '' ) ? 'writing the snapshot' : 'reading the files' ),
+					(int) ( $run['files'] ?? 0 ),
+					esc_html( size_format( (int) ( $run['bytes'] ?? 0 ), 1 ) )
+				);
+				if ( ! empty( $run['message'] ) ) {
+					$s .= '<br><span class="safegrd-warn">' . esc_html( $run['message'] ) . '</span>';
+				}
+				return $s;
 			case 'completed':
 				$s = sprintf(
-					'<strong>Completed</strong> %s: %d tables, %d rows, %d files, %s stored in %ss.',
+					'<strong>Completed</strong> %s: %d tables, %d rows, %d files, %s uploaded in %ss.',
 					esc_html( self::when( $run['finished_at'] ) ),
 					(int) $run['tables'],
 					(int) $run['rows'],

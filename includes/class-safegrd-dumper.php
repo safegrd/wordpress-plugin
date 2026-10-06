@@ -5,6 +5,11 @@
  * CREATE TABLE on a line of its own, rows as INSERT INTO `t` VALUES (...),(...);
  * binary values as hex, and "-- Dump completed" as the last line.
  *
+ * The dump is files of the run: mysql/dump.sql holds the header, each table
+ * is a part of its own (mysql/dump.sql.1, .2, ...), and the last part holds
+ * the footer. A table whose rows did not change is the same bytes as last
+ * time, so it uploads nothing.
+ *
  * Every table is read inside one consistent snapshot (InnoDB), with an
  * unbuffered query, so memory does not grow with the table.
  *
@@ -16,15 +21,11 @@ defined( 'ABSPATH' ) || exit;
 final class SafeGrd_Dumper {
 	/** One INSERT statement grows to about this many bytes. */
 	const STATEMENT_BYTES = 1048576;
-	/** One tar entry of the dump holds at most this many bytes. */
-	const CHUNK_BYTES = 8388608;
-
 	/** @var mysqli */
 	private $db;
-	/** @var SafeGrd_Tar */
-	private $tar;
+	/** @var SafeGrd_Backup */
+	private $out;
 	private $prefix;
-	private $chunk = '';
 	private $part = 0;
 	private $tables = array();
 	private $skipped = array();
@@ -33,9 +34,9 @@ final class SafeGrd_Dumper {
 	private $charset = 'utf8mb4';
 	private $attachments = 0;
 
-	public function __construct( SafeGrd_Tar $tar ) {
+	public function __construct( SafeGrd_Backup $out ) {
 		global $wpdb;
-		$this->tar    = $tar;
+		$this->out    = $out;
 		$this->prefix = $wpdb->prefix;
 		$this->db     = self::connect();
 	}
@@ -97,6 +98,7 @@ final class SafeGrd_Dumper {
 		try {
 			$names = $this->table_names();
 			$sizes = $this->table_sizes();
+			$this->next_part();
 			$this->emit( "-- SafeGrd WordPress dump\n" );
 			$this->emit( '-- Database: ' . $this->database . "\n" );
 			$this->emit( '-- Server version: ' . $this->server_version . "\n\n" );
@@ -106,6 +108,7 @@ final class SafeGrd_Dumper {
 			$this->emit( "/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n" );
 			$this->emit( "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n\n" );
 			foreach ( $names as $name ) {
+				$this->next_part();
 				$rows                  = $this->dump_table( $name );
 				$this->tables[ $name ] = array(
 					'rows' => $rows,
@@ -115,11 +118,12 @@ final class SafeGrd_Dumper {
 			$this->attachments = (int) $this->scalar(
 				'SELECT COUNT(*) FROM ' . $this->quote_name( $this->prefix . 'postmeta' ) . " WHERE meta_key = '_wp_attached_file'"
 			);
+			$this->next_part();
 			$this->emit( "/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n" );
 			$this->emit( "/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n" );
 			$this->emit( "/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;\n\n" );
-			$this->emit( '-- Dump completed on ' . gmdate( 'Y-m-d H:i:s' ) . "\n" );
-			$this->flush_chunk();
+			$this->emit( "-- Dump completed\n" );
+			$this->out->end_file();
 		} finally {
 			$this->db->query( 'COMMIT' );
 			$this->db->close();
@@ -142,6 +146,9 @@ final class SafeGrd_Dumper {
 		$res  = $this->query( "SHOW FULL TABLES LIKE '" . $like . "'" );
 		$out  = array();
 		while ( $row = $res->fetch_row() ) {
+			if ( 0 === strpos( $row[0], $this->prefix . 'safegrd_' ) ) {
+				continue; // this plugin's own record of what is stored
+			}
 			if ( 'BASE TABLE' === $row[1] ) {
 				$out[] = $row[0];
 			} else {
@@ -271,23 +278,19 @@ final class SafeGrd_Dumper {
 	}
 
 	/**
-	 * Adds SQL to the dump, writing a tar entry each time a chunk fills.
+	 * Ends the part being written and starts the next. Parts are numbered
+	 * without a gap, as the reader requires.
 	 */
-	private function emit( $sql ) {
-		$this->chunk .= $sql;
-		if ( strlen( $this->chunk ) >= self::CHUNK_BYTES ) {
-			$this->flush_chunk();
+	private function next_part() {
+		if ( $this->part > 0 ) {
+			$this->out->end_file();
 		}
+		$this->out->begin_file( 0 === $this->part ? 'mysql/dump.sql' : 'mysql/dump.sql.' . $this->part );
+		$this->part++;
 	}
 
-	private function flush_chunk() {
-		if ( '' === $this->chunk ) {
-			return;
-		}
-		$name = 0 === $this->part ? 'mysql/dump.sql' : 'mysql/dump.sql.' . $this->part;
-		$this->tar->add_bytes( $name, $this->chunk );
-		$this->part++;
-		$this->chunk = '';
+	private function emit( $sql ) {
+		$this->out->write( $sql );
 	}
 
 	private function quote_name( $name ) {

@@ -12,7 +12,7 @@ Backs up the database and files, encrypted on your server, to locked storage, an
 
 == Description ==
 
-SafeGrd Backup sends one encrypted archive of the site (its database, wp-config.php, .htaccess and wp-content) to SafeGrd's hosted storage, where it is locked against deletion. SafeGrd then test-restores the newest backup on a schedule: it checks the archive decrypts, every table has its rows, every file matches its digest, and every attachment the database names is in the archive.
+SafeGrd Backup backs up the site (its database, wp-config.php, .htaccess and wp-content) to SafeGrd's hosted storage, encrypted on this server and locked against deletion. Each backup is a complete snapshot, and uploads only what changed since the last: an unchanged image, theme or table costs nothing. SafeGrd then test-restores the newest backup on a schedule: it checks the archive decrypts, every table has its rows, every file matches its digest, and every attachment the database names is in the archive.
 
 The free plan covers one site. What each plan includes is at https://safegrd.dev/pricing.
 
@@ -21,11 +21,11 @@ The backup is encrypted with age on this server before it is uploaded. Choose wh
 * SafeGrd-managed key: SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
 * Customer-managed key: only you can decrypt these backups. Keep a copy of the key somewhere safe.
 
-The plugin is written in PHP and needs nothing else installed.
+The plugin is written in PHP and needs nothing else installed. A backup runs in slices of a few seconds, so a host that stops long requests does not stop it.
 
 == External service ==
 
-This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service, once you connect the site. It sends the encrypted archive to storage SafeGrd operates, and to safegrd.dev: the site's name and URL, the database name, table row counts, file counts and the time and size of each backup. Terms: https://safegrd.dev/terms. Privacy: https://safegrd.dev/privacy.
+This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service, once you connect the site. It sends the encrypted backups to storage SafeGrd operates, and to safegrd.dev: the site's name and URL, the database name, table row counts, file counts and the time and size of each backup. Terms: https://safegrd.dev/terms. Privacy: https://safegrd.dev/privacy.
 
 == Installation ==
 

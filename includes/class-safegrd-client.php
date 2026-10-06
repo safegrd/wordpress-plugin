@@ -107,11 +107,11 @@ final class SafeGrd_Client {
 	}
 
 	/**
-	 * PUTs bytes to a presigned URL.
+	 * PUTs bytes to a presigned URL, with the headers it was signed with.
 	 *
 	 * @return true|WP_Error
 	 */
-	public static function put( $url, $bytes ) {
+	public static function put( $url, $bytes, array $headers = array() ) {
 		$resp = wp_remote_request(
 			$url,
 			self::request_args(
@@ -119,6 +119,7 @@ final class SafeGrd_Client {
 					'method'  => 'PUT',
 					'timeout' => 300,
 					'body'    => $bytes,
+					'headers' => $headers,
 				)
 			)
 		);

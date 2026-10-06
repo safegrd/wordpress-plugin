@@ -41,17 +41,20 @@ backs up this site only.
 
 ## What a backup holds
 
-One archive per backup, `age(gzip(tar))`:
+Each backup is a complete snapshot of the site, stored incrementally: files are cut into 4 MiB
+chunks, encrypted and gathered into packs, and a run uploads only the chunks this month's
+repository does not hold yet. An unchanged image, theme or table costs nothing. The first
+backup of each month uploads everything once.
 
-| Entry | Contents |
+| Path in the snapshot | Contents |
 | :-- | :-- |
-| `mysql/dump.sql`, `.1`, ... | Every table with the site's `$table_prefix`, read in one consistent snapshot, in the form `mysqldump` writes |
+| `mysql/dump.sql`, `.1`, `.2`, ... | The database in the form `mysqldump` writes, one part per table, read in one consistent snapshot. Only tables with the site's `$table_prefix` |
 | `files/...` | `wp-config.php`, `.htaccess` and `wp-content`, without caches, `upgrade`, `debug.log` and other backup plugins' archives |
-| `files.json` | Each file's path, size and SHA-256 |
 | `manifest.json` | Table row counts, site URL, WordPress and PHP versions, table prefix |
 
-WordPress core is not in the archive: reinstall the version the backup names. The plugin's own
-settings are left out, so a restored site comes back disconnected.
+WordPress core is not in the snapshot: reinstall the version the backup names. The plugin's own
+settings and its record of what is stored are left out, so a restored site comes back
+disconnected.
 
 Refused: multisite networks, and sites whose media a plugin keeps in object storage.
 
@@ -59,7 +62,7 @@ Refused: multisite networks, and sites whose media a plugin keeps in object stor
 
 SafeGrd decrypts the newest backup on its own machines and checks, in memory: the digest, that
 the dump is complete with every table's rows, that every file matches its listed digest, and that
-every attachment the database names (`_wp_attached_file`) is in the archive.
+every attachment the database names (`_wp_attached_file`) is in the snapshot.
 
 ## Restore
 
@@ -75,12 +78,17 @@ Then install the WordPress version it prints, copy `wp-content`, `wp-config.php`
 over it, and point the database settings in `wp-config.php` at the restored database. Full
 steps: [safegrd.dev/docs/surfaces/wordpress](https://safegrd.dev/docs/surfaces/wordpress#restore).
 
-## Long backups on strict hosts
+## Large sites on strict hosts
 
-A backup runs in one PHP request started by WP-Cron and streams to storage in 8 MiB parts,
-without writing a copy to disk. A host that stops long requests can stop a large site's backup
-part way. The run is then recorded as failed with the reason. Run it from the server's cron
-instead:
+A backup runs in slices of a few seconds, each its own request: a third of the host's
+`max_execution_time`, at most 25 seconds. Each slice uploads what it read, saves where it got to,
+and starts the next with a request to the site itself; a WP-Cron event a minute out stands behind
+it. A host that stops a request stops one slice, and the next resumes from the last saved point.
+Nothing secret is saved between slices: each pack is sealed and uploaded before its slice ends.
+
+Two things still have to fit in one slice's request: the database dump, so that it stays one
+consistent snapshot, and the largest single file. When a host stops either, the run is recorded
+as failed with the reason. Run it from the server's cron instead, where PHP has no time limit:
 
 ```
 17 3 * * * cd /var/www/html && wp safegrd backup --quiet
@@ -92,6 +100,7 @@ instead:
 | :-- | :-- |
 | `SAFEGRD_SERVER_URL` | A self-hosted SafeGrd server |
 | `SAFEGRD_CA_FILE` | A CA bundle for a server with a private CA |
+| `SAFEGRD_SLICE_SECONDS` | How long one slice runs, in seconds, when the host's limit is not the right guide |
 
 ## Development
 

@@ -197,5 +197,9 @@ final class SafeGrd_Connect {
 		SafeGrd_Scheduler::unschedule();
 		SafeGrd_Settings::forget();
 		delete_transient( self::SESSION );
+		delete_option( SafeGrd_Backup::JOB );
+		delete_option( SafeGrd_Backup::REPO );
+		delete_option( SafeGrd_Backup::LOCK );
+		SafeGrd_Repo_Cache::forget_all();
 	}
 }

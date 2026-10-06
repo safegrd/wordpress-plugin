@@ -14,12 +14,20 @@ defined( 'ABSPATH' ) || exit;
 final class SafeGrd_Scheduler {
 	const HOOK     = 'safegrd_scheduled_backup';
 	const NOW_HOOK = 'safegrd_backup_now';
+	/** The next slice of a backup under way. */
+	const CONTINUE_HOOK = 'safegrd_continue';
 	/** The schedule the server is told this site runs. */
 	const SCHEDULE = '@daily';
 
+	const SLICE_ACTION = 'safegrd_slice';
+	const SLICE_KEY    = 'safegrd_slice_key';
+
 	public static function init() {
+		add_action( 'wp_ajax_nopriv_' . self::SLICE_ACTION, array( __CLASS__, 'slice_request' ) );
+		add_action( 'wp_ajax_' . self::SLICE_ACTION, array( __CLASS__, 'slice_request' ) );
 		add_action( self::HOOK, array( __CLASS__, 'run' ) );
-		add_action( self::NOW_HOOK, array( __CLASS__, 'run' ) );
+		add_action( self::NOW_HOOK, array( __CLASS__, 'run_requested' ) );
+		add_action( self::CONTINUE_HOOK, array( __CLASS__, 'run_requested' ) );
 	}
 
 	/**
@@ -36,6 +44,63 @@ final class SafeGrd_Scheduler {
 	public static function unschedule() {
 		wp_clear_scheduled_hook( self::HOOK );
 		wp_clear_scheduled_hook( self::NOW_HOOK );
+		self::continue_cancel();
+	}
+
+	/**
+	 * Starts the next slice at once, in a request of its own: a loopback to
+	 * admin-ajax.php that does not wait for an answer. A WP-Cron event a
+	 * minute out stands behind it, for a host that blocks loopbacks.
+	 */
+	public static function continue_now() {
+		self::continue_later( MINUTE_IN_SECONDS );
+		self::kick();
+	}
+
+	/**
+	 * Fires the loopback that runs one slice. The key is this site's own,
+	 * so nobody else can make it run backups.
+	 */
+	public static function kick() {
+		$key = get_option( self::SLICE_KEY, '' );
+		if ( '' === $key ) {
+			$key = bin2hex( random_bytes( 16 ) );
+			update_option( self::SLICE_KEY, $key, false );
+		}
+		wp_remote_post(
+			admin_url( 'admin-ajax.php' ),
+			array(
+				'blocking'  => false,
+				'timeout'   => 0.01,
+				'body'      => array(
+					'action' => self::SLICE_ACTION,
+					'key'    => $key,
+				),
+				'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
+			)
+		);
+	}
+
+	/** The loopback's handler: one slice, when the key is this site's. */
+	public static function slice_request() {
+		$key  = get_option( self::SLICE_KEY, '' );
+		$sent = isset( $_POST['key'] ) ? sanitize_text_field( wp_unslash( $_POST['key'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- a loopback, authenticated by the site's own key.
+		if ( '' === $key || ! hash_equals( $key, $sent ) ) {
+			wp_die( '', '', array( 'response' => 403 ) );
+		}
+		ignore_user_abort( true );
+		self::run_requested();
+		wp_die( '', '', array( 'response' => 200 ) );
+	}
+
+	/** Asks for a slice after a while: a retry, or a watchdog. */
+	public static function continue_later( $seconds ) {
+		self::continue_cancel();
+		wp_schedule_single_event( time() + (int) $seconds, self::CONTINUE_HOOK, array( microtime( true ) ) );
+	}
+
+	public static function continue_cancel() {
+		wp_unschedule_hook( self::CONTINUE_HOOK );
 	}
 
 	/**
@@ -47,8 +112,9 @@ final class SafeGrd_Scheduler {
 		if ( SafeGrd_Backup::running() || wp_next_scheduled( self::NOW_HOOK ) ) {
 			return false;
 		}
-		wp_schedule_single_event( time(), self::NOW_HOOK );
-		spawn_cron();
+		update_option( SafeGrd_Backup::REQUESTED, time(), false );
+		wp_schedule_single_event( time() + MINUTE_IN_SECONDS, self::NOW_HOOK );
+		self::kick();
 		return true;
 	}
 
@@ -57,10 +123,25 @@ final class SafeGrd_Scheduler {
 		return $t ? (int) $t : 0;
 	}
 
+	/**
+	 * The daily run: one slice of the backup under way, or the first of a
+	 * new one.
+	 */
 	public static function run() {
 		if ( ! SafeGrd_Settings::connected() ) {
 			return;
 		}
-		( new SafeGrd_Backup() )->run();
+		( new SafeGrd_Backup() )->run( true );
+	}
+
+	/**
+	 * A continuation: one slice of the backup under way, or the first of the
+	 * one Back up now asked for. Never a backup nobody asked for.
+	 */
+	public static function run_requested() {
+		if ( ! SafeGrd_Settings::connected() ) {
+			return;
+		}
+		( new SafeGrd_Backup() )->run( false );
 	}
 }
