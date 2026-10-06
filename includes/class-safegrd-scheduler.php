@@ -131,6 +131,10 @@ final class SafeGrd_Scheduler {
 		if ( ! SafeGrd_Settings::connected() ) {
 			return;
 		}
+		if ( SafeGrd_Restore::job() ) {
+			( new SafeGrd_Restore() )->run();
+			return;
+		}
 		( new SafeGrd_Backup() )->run( true );
 	}
 
@@ -140,6 +144,10 @@ final class SafeGrd_Scheduler {
 	 */
 	public static function run_requested() {
 		if ( ! SafeGrd_Settings::connected() ) {
+			return;
+		}
+		if ( SafeGrd_Restore::job() ) {
+			( new SafeGrd_Restore() )->run();
 			return;
 		}
 		( new SafeGrd_Backup() )->run( false );

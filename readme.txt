@@ -37,7 +37,7 @@ This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service, on
 
 = How do I restore? =
 
-With the safegrd command line tool: https://safegrd.dev/docs/surfaces/wordpress#restore
+From Tools, SafeGrd, Restore, on this site or a new one connected to the same account. The site runs as it is until the restored database and files are loaded and checked, and what they replace is kept aside until you delete it. Details: https://safegrd.dev/docs/surfaces/wordpress#restore
 
 = Does it back up multisite? =
 

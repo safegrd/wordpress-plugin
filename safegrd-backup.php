@@ -28,6 +28,8 @@ require_once __DIR__ . '/includes/class-safegrd-repo.php';
 require_once __DIR__ . '/includes/class-safegrd-site.php';
 require_once __DIR__ . '/includes/class-safegrd-dumper.php';
 require_once __DIR__ . '/includes/class-safegrd-backup.php';
+require_once __DIR__ . '/includes/class-safegrd-reader.php';
+require_once __DIR__ . '/includes/class-safegrd-restore.php';
 require_once __DIR__ . '/includes/class-safegrd-connect.php';
 require_once __DIR__ . '/includes/class-safegrd-scheduler.php';
 

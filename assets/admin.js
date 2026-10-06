@@ -180,7 +180,87 @@
 		});
 	}
 
-	refresh(false).then(function (s) { if (s.running) watch(); }).catch(function (e) {
+	// Restore: the account's WordPress backups, each restorable onto this site.
+	function renderRestoreList(list) {
+		var box = document.getElementById("safegrd-restore-list");
+		box.textContent = "";
+		if (!list.length) {
+			var none = document.createElement("p");
+			none.className = "description";
+			none.textContent = "No WordPress backups in this account yet.";
+			box.appendChild(none);
+			return;
+		}
+		var table = document.createElement("table");
+		table.className = "widefat striped";
+		var head = table.createTHead().insertRow();
+		["Site", "Taken", "Contents", ""].forEach(function (h) {
+			var th = document.createElement("th");
+			th.textContent = h;
+			head.appendChild(th);
+		});
+		var body = table.createTBody();
+		list.forEach(function (s) {
+			var row = body.insertRow();
+			text(row.insertCell(), s.site);
+			text(row.insertCell(), s.taken);
+			text(row.insertCell(), s.tables + " tables, " + s.files + " files, " + s.size + (s.verified ? ", test-restored" : ""));
+			var btn = document.createElement("button");
+			btn.type = "button";
+			btn.className = "button";
+			btn.textContent = "Restore";
+			btn.addEventListener("click", function () { startRestore(s); });
+			row.insertCell().appendChild(btn);
+		});
+		box.appendChild(table);
+	}
+
+	function startRestore(s) {
+		var msg = "Restore the backup of " + s.site + " taken " + s.taken + " onto this site?\n\n" +
+			"This site's database and content directory are replaced. The current ones are kept aside until you delete them.\n\n" +
+			"Afterwards this site's users are the backup's: sign in with an administrator account of the restored site.";
+		if (!window.confirm(msg)) return;
+		post("safegrd_restore_start", { snapshot: s.id }).then(function (r) {
+			notice("info", r.message);
+			watchRestore();
+		}).catch(function (e) { notice("error", e.message); });
+	}
+
+	function watchRestore() {
+		var tick = function () {
+			post("safegrd_status", { local: "1" }).then(function (s) {
+				document.getElementById("safegrd-restore-state").innerHTML = s.restore;
+				bindDeleteCopy();
+				if (s.restoring) {
+					setTimeout(tick, 4000);
+				}
+			}).catch(function () {
+				// The session ends when the restored users replace this site's.
+				notice("success", "The restore has finished or your session ended with it. Sign in with an administrator account of the restored site.");
+			});
+		};
+		setTimeout(tick, 3000);
+	}
+
+	function bindDeleteCopy() {
+		var del = document.getElementById("safegrd-delete-copy");
+		if (!del || del.dataset.bound) return;
+		del.dataset.bound = "1";
+		del.addEventListener("click", function () {
+			if (!window.confirm("Delete the tables and files kept from before the restore? They cannot be brought back.")) return;
+			post("safegrd_restore_delete_copy", {}).then(function (r) {
+				notice("success", r.message);
+				document.getElementById("safegrd-restore-state").textContent = "";
+			}).catch(function (e) { notice("error", e.message); });
+		});
+	}
+	bindDeleteCopy();
+
+	post("safegrd_restore_list", {}).then(function (r) { renderRestoreList(r.snapshots); }).catch(function (e) {
+		document.getElementById("safegrd-restore-list").textContent = "SafeGrd did not answer: " + e.message;
+	});
+
+	refresh(false).then(function (s) { if (s.running) watch(); if (s.restoring) watchRestore(); }).catch(function (e) {
 		document.getElementById("safegrd-drill").textContent = "";
 		notice("error", e.message);
 	});

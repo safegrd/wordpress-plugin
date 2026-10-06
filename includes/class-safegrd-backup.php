@@ -109,6 +109,12 @@ final class SafeGrd_Backup {
 		if ( ! $may_start && ! is_array( get_option( self::JOB, null ) ) && ! get_option( self::REQUESTED, false ) ) {
 			return array( 'status' => 'idle' );
 		}
+		if ( SafeGrd_Restore::job() ) {
+			return array(
+				'status'  => 'busy',
+				'message' => 'A restore of this site is under way. Backups start again when it finishes.',
+			);
+		}
 		if ( ! SafeGrd_Settings::connected() ) {
 			return $this->record_failure( 'This site is not connected to SafeGrd. Connect it under Tools, SafeGrd.', 'config', '' );
 		}
@@ -555,8 +561,8 @@ final class SafeGrd_Backup {
 				continue;
 			}
 			if ( is_dir( $full ) ) {
-				if ( $dir === $content_root && in_array( $name, self::EXCLUDE_DIRS, true ) ) {
-					continue;
+				if ( $dir === $content_root && ( in_array( $name, self::EXCLUDE_DIRS, true ) || 0 === strpos( $name, 'safegrd-' ) ) ) {
+					continue; // caches, other plugins' backups, a restore's staging and kept copy
 				}
 				if ( $dir === $content_root . '/uploads' && 0 === strpos( $name, 'backwpup' ) ) {
 					continue;
@@ -1054,31 +1060,42 @@ final class SafeGrd_Backup {
 	// --- the lock -----------------------------------------------------------
 
 	/**
-	 * Takes the slice lock. add_option is a single INSERT, so two slices that
-	 * race for it cannot both win. A lock older than a slice can run belongs
-	 * to one the host stopped.
+	 * Takes the slice lock, shared by backups and restores. add_option is a
+	 * single INSERT, so two slices that race for it cannot both win. A lock
+	 * older than a slice can run belongs to one the host stopped.
 	 */
-	private function lock() {
-		$now   = time();
-		$stale = $this->stale_after();
+	public static function take_lock( $budget ) {
+		$now = time();
 		if ( add_option( self::LOCK, $now, '', 'no' ) ) {
 			return true;
 		}
 		$held = (int) get_option( self::LOCK, 0 );
-		if ( $held && $now - $held < $stale ) {
+		if ( $held && $now - $held < self::stale_seconds( $budget ) ) {
 			return false;
 		}
 		delete_option( self::LOCK );
 		return add_option( self::LOCK, $now, '', 'no' );
 	}
 
+	public static function release_lock() {
+		delete_option( self::LOCK );
+	}
+
 	/** Seconds after which a held lock belongs to a slice the host stopped. */
-	private function stale_after() {
-		return 0.0 === $this->budget ? 6 * HOUR_IN_SECONDS : (int) ceil( $this->budget * 3 + 60 );
+	public static function stale_seconds( $budget ) {
+		return 0.0 === (float) $budget ? 6 * HOUR_IN_SECONDS : (int) ceil( $budget * 3 + 60 );
+	}
+
+	private function lock() {
+		return self::take_lock( $this->budget );
 	}
 
 	private function unlock() {
-		delete_option( self::LOCK );
+		self::release_lock();
+	}
+
+	private function stale_after() {
+		return self::stale_seconds( $this->budget );
 	}
 
 	/** Whether a backup is under way: a slice running, or one still to come. */

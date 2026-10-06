@@ -20,6 +20,9 @@ final class SafeGrd_Admin {
 		add_action( 'wp_ajax_safegrd_backup_now', array( __CLASS__, 'ajax_backup_now' ) );
 		add_action( 'wp_ajax_safegrd_status', array( __CLASS__, 'ajax_status' ) );
 		add_action( 'wp_ajax_safegrd_disconnect', array( __CLASS__, 'ajax_disconnect' ) );
+		add_action( 'wp_ajax_safegrd_restore_list', array( __CLASS__, 'ajax_restore_list' ) );
+		add_action( 'wp_ajax_safegrd_restore_start', array( __CLASS__, 'ajax_restore_start' ) );
+		add_action( 'wp_ajax_safegrd_restore_delete_copy', array( __CLASS__, 'ajax_restore_delete_copy' ) );
 		add_filter( 'plugin_action_links_' . plugin_basename( SAFEGRD_FILE ), array( __CLASS__, 'action_links' ) );
 	}
 
@@ -137,7 +140,10 @@ final class SafeGrd_Admin {
 			<h3>Recent backups</h3>
 			<div id="safegrd-snapshots"><p class="description">Asking SafeGrd...</p></div>
 			<h3>Restore</h3>
-			<p>Restore a backup with the safegrd command line tool, on any machine signed in to your account: it writes the files to a folder and loads the database into an empty MySQL database. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
+			<p>Restore any WordPress site's backup in this account onto this site: a new install, or this site as it was. This site's database and content directory are replaced, and the ones it had are kept aside until you delete them. <code>wp-config.php</code> stays this site's own.</p>
+			<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
+			<div id="safegrd-restore-list"><p class="description">Asking SafeGrd...</p></div>
+			<p class="description">A backup taken with a customer-managed key restores with the safegrd command line tool and that key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
 			<hr>
 			<p class="description">Node <?php echo esc_html( SafeGrd_Settings::get( 'node_id' ) ); ?> on <?php echo esc_html( SafeGrd_Settings::server_url() ); ?>.
 				<a href="#" id="safegrd-disconnect">Disconnect this site</a>. Backups already taken stay in SafeGrd.</p>
@@ -171,6 +177,47 @@ final class SafeGrd_Admin {
 			}
 		}
 		return '';
+	}
+
+	/**
+	 * The restore under way, or the last one, in HTML.
+	 */
+	public static function describe_restore() {
+		$job = SafeGrd_Restore::job();
+		if ( $job ) {
+			$stages = array(
+				'plan'     => 'reading the backup',
+				'database' => 'loading the database into new tables',
+				'tables'   => 'checking the tables',
+				'files'    => sprintf( 'writing the files (%d of %d)', (int) $job['files'], (int) ( $job['total_files'] ?? 0 ) ),
+				'swap'     => 'swapping the restored site in',
+				'done'     => 'finishing',
+			);
+			return '<p><strong>Restoring ' . esc_html( $job['snapshot_id'] ) . ':</strong> ' . esc_html( $stages[ $job['stage'] ] ?? $job['stage'] ) . '. The site runs as it is until the swap.</p>';
+		}
+		$last = get_option( SafeGrd_Restore::LAST, array() );
+		if ( ! $last ) {
+			return '';
+		}
+		if ( ! empty( $last['failed'] ) ) {
+			return '<p class="safegrd-warn"><strong>The restore of ' . esc_html( $last['snapshot_id'] ) . ' failed:</strong> ' . esc_html( $last['failed'] ) . '</p>';
+		}
+		$s = sprintf(
+			'<p><strong>Restored %s</strong> of %s on %s: %d tables, %d rows, %d files.</p>',
+			esc_html( $last['snapshot_id'] ),
+			esc_html( $last['source_url'] ),
+			esc_html( self::when( $last['restored_at'] ) ),
+			(int) $last['tables'],
+			(int) $last['rows'],
+			(int) $last['files']
+		);
+		foreach ( (array) $last['notes'] as $note ) {
+			$s .= '<p class="description">' . esc_html( $note ) . '</p>';
+		}
+		if ( ! empty( $last['aside'] ) ) {
+			$s .= '<p>The tables and files from before the restore are kept aside. <button type="button" class="button" id="safegrd-delete-copy">Delete the copy</button></p>';
+		}
+		return $s;
 	}
 
 	/**
@@ -270,8 +317,10 @@ final class SafeGrd_Admin {
 	public static function ajax_status() {
 		self::guard();
 		$out = array(
-			'running' => SafeGrd_Backup::running(),
-			'last'    => self::describe_run( SafeGrd_Settings::last_run() ),
+			'running'   => SafeGrd_Backup::running(),
+			'restoring' => (bool) SafeGrd_Restore::job(),
+			'last'      => self::describe_run( SafeGrd_Settings::last_run() ),
+			'restore'   => self::describe_restore(),
 		);
 		if ( SafeGrd_Settings::connected() && empty( $_POST['local'] ) ) {
 			$client = SafeGrd_Client::for_site();
@@ -308,6 +357,36 @@ final class SafeGrd_Admin {
 			}
 		}
 		wp_send_json_success( $out );
+	}
+
+	public static function ajax_restore_list() {
+		self::guard();
+		$list = SafeGrd_Restore::snapshots();
+		if ( is_wp_error( $list ) ) {
+			wp_send_json_error( array( 'message' => $list->get_error_message() ) );
+		}
+		foreach ( $list as &$s ) {
+			$s['taken'] = self::when( $s['taken'] );
+			$s['size']  = size_format( $s['size'], 1 );
+		}
+		unset( $s );
+		wp_send_json_success( array( 'snapshots' => $list ) );
+	}
+
+	public static function ajax_restore_start() {
+		self::guard();
+		$id = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : '';
+		$ok = SafeGrd_Restore::begin( $id );
+		if ( is_wp_error( $ok ) ) {
+			wp_send_json_error( array( 'message' => $ok->get_error_message() ) );
+		}
+		SafeGrd_Scheduler::continue_now();
+		wp_send_json_success( array( 'message' => 'Restore started. The site runs as it is until the restored one is swapped in.' ) );
+	}
+
+	public static function ajax_restore_delete_copy() {
+		self::guard();
+		wp_send_json_success( array( 'message' => SafeGrd_Restore::delete_copy() ) );
 	}
 
 	public static function ajax_disconnect() {

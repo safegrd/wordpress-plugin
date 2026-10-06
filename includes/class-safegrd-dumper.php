@@ -46,7 +46,7 @@ final class SafeGrd_Dumper {
 	 * the uploads that run while a table is still being read, and the
 	 * snapshot's transaction and time zone never touch it.
 	 */
-	private static function connect() {
+	public static function connect() {
 		global $wpdb;
 		if ( ! class_exists( 'mysqli' ) ) {
 			throw new SafeGrd_Exception( 'PHP on this host has no mysqli extension, so the plugin cannot read the database.', 'source' );

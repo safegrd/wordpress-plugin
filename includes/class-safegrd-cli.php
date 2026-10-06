@@ -152,6 +152,87 @@ final class SafeGrd_CLI {
 	}
 
 	/**
+	 * Lists the backups of every WordPress site in this account that this site can restore.
+	 *
+	 * @when after_wp_load
+	 */
+	public function snapshots( $args, $assoc ) {
+		$list = SafeGrd_Restore::snapshots();
+		if ( is_wp_error( $list ) ) {
+			WP_CLI::error( $list->get_error_message() );
+		}
+		if ( ! $list ) {
+			WP_CLI::line( 'No WordPress backups in this account yet.' );
+			return;
+		}
+		foreach ( $list as $s ) {
+			WP_CLI::line( sprintf( '%s  %s  %s  %d tables, %d files, %s%s', $s['id'], substr( $s['taken'], 0, 16 ), $s['site'], $s['tables'], $s['files'], size_format( $s['size'], 1 ), $s['verified'] ? ', test-restored' : '' ) );
+		}
+	}
+
+	/**
+	 * Restores a backup onto this site, replacing its database and content directory.
+	 *
+	 * The tables and files it replaces are kept aside until you delete them with --delete-copy.
+	 * Afterwards, sign in with an administrator account of the restored site.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [<snapshot>]
+	 * : The backup to restore, from wp safegrd snapshots.
+	 *
+	 * [--yes]
+	 * : Do not ask for confirmation.
+	 *
+	 * [--delete-copy]
+	 * : Delete the tables and files the last restore kept aside, and restore nothing.
+	 *
+	 * [--slice-seconds=<seconds>]
+	 * : How long each slice runs. Default: the same as a backup's.
+	 *
+	 * @when after_wp_load
+	 */
+	public function restore( $args, $assoc ) {
+		if ( ! empty( $assoc['delete-copy'] ) ) {
+			WP_CLI::line( SafeGrd_Restore::delete_copy() );
+			return;
+		}
+		if ( empty( $args[0] ) && ! SafeGrd_Restore::job() ) {
+			WP_CLI::error( 'Name the backup to restore. wp safegrd snapshots lists them.' );
+		}
+		if ( ! SafeGrd_Restore::job() ) {
+			WP_CLI::confirm( sprintf( 'Restore %s onto %s? This site\'s database and content directory are replaced; the current ones are kept aside.', $args[0], home_url() ), $assoc );
+			$ok = SafeGrd_Restore::begin( $args[0] );
+			if ( is_wp_error( $ok ) ) {
+				WP_CLI::error( $ok->get_error_message() );
+			}
+		} else {
+			WP_CLI::line( 'Continuing the restore under way.' );
+		}
+		$say = function ( $line ) {
+			if ( 0 !== strpos( $line, 'Error: ' ) ) {
+				WP_CLI::line( $line );
+			}
+		};
+		$budget = isset( $assoc['slice-seconds'] ) ? (float) $assoc['slice-seconds'] : null;
+		do {
+			$run = ( new SafeGrd_Restore( $say, $budget ) )->run();
+			if ( 'busy' === $run['status'] ) {
+				WP_CLI::error( $run['message'] );
+			}
+		} while ( 'running' === $run['status'] );
+		if ( 'restored' !== $run['status'] ) {
+			WP_CLI::error( isset( $run['message'] ) ? $run['message'] : 'The restore did not finish.' );
+		}
+		WP_CLI::line( sprintf( 'Restored %s of %s (taken %s): %d tables, %d rows, %d files', $run['snapshot_id'], $run['source_url'], $run['taken_at'], $run['tables'], $run['rows'], $run['files'] ) );
+		foreach ( (array) $run['notes'] as $note ) {
+			WP_CLI::line( '   ' . $note );
+		}
+		WP_CLI::line( '   The replaced tables and files are kept aside. Delete them with: wp safegrd restore --delete-copy' );
+		WP_CLI::line( '   Sign in with an administrator account of the restored site.' );
+	}
+
+	/**
 	 * Shows the connection and the last backup.
 	 *
 	 * @when after_wp_load

@@ -24,7 +24,7 @@ From WP-CLI:
 ```sh
 wp plugin install safegrd-backup.zip --activate
 wp safegrd connect                       # prints a URL and a code to approve on any device
-wp safegrd connect --token env:SAFEGRD_TOKEN   # or a personal access token from the console
+wp safegrd connect --token=env:SAFEGRD_TOKEN   # or a personal access token from the console
 wp safegrd backup
 wp safegrd status
 ```
@@ -66,17 +66,32 @@ every attachment the database names (`_wp_attached_file`) is in the snapshot.
 
 ## Restore
 
-With the [safegrd CLI](https://safegrd.dev/docs/install), on a machine signed in to the same
-account, into an empty MySQL or MariaDB database and an empty directory:
+From wp-admin: install WordPress and this plugin on any host, connect to the same account, and
+open Tools, SafeGrd. *Restore* lists the backups of every WordPress site in the account; pick one
+and confirm. The same page restores a site over itself.
+
+- Nothing on the site changes until every table and file is loaded and checked against the
+  backup. Then one step swaps them in, and the tables and files they replace are kept aside until
+  you press *Delete the copy*.
+- The site keeps its own `wp-config.php` and address. A different address is replaced in the
+  database, serialized values included; a different table prefix is handled.
+- Afterwards the site's users are the backup's: sign in with an administrator account of the
+  restored site.
 
 ```sh
-safegrd list
+wp safegrd snapshots
+wp safegrd restore snap-... --yes
+wp safegrd restore --delete-copy
+```
+
+The plugin restores backups taken with a SafeGrd-managed key. For a customer-managed key, use the
+[safegrd CLI](https://safegrd.dev/docs/install) on a machine signed in to the same account:
+
+```sh
 safegrd restore --snapshot snap-... --target mysql://user:pass@host:3306/wordpress --target-dir ./restored
 ```
 
-Then install the WordPress version it prints, copy `wp-content`, `wp-config.php` and `.htaccess`
-over it, and point the database settings in `wp-config.php` at the restored database. Full
-steps: [safegrd.dev/docs/surfaces/wordpress](https://safegrd.dev/docs/surfaces/wordpress#restore).
+Full steps: [safegrd.dev/docs/surfaces/wordpress](https://safegrd.dev/docs/surfaces/wordpress#restore).
 
 ## Large sites on strict hosts
 
