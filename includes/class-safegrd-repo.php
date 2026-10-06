@@ -448,6 +448,12 @@ final class SafeGrd_Repo_Cache {
 		return $wpdb->get_results( $wpdb->prepare( 'SELECT path,size,mtime,mode,sha256,blobs FROM ' . self::files_table() . ' WHERE epoch_id = %s AND run_id = %s', $epoch_id, $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	}
 
+	/** Moves the files a run saw to another run. */
+	public static function retag_run( $epoch_id, $from, $to ) {
+		global $wpdb;
+		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::files_table() . ' SET run_id = %s WHERE epoch_id = %s AND run_id = %s', $to, $epoch_id, $from ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	}
+
 	/** Drops this run's rows of paths it has not finished, for a fresh start. */
 	public static function forget_run( $epoch_id, $run_id ) {
 		global $wpdb;

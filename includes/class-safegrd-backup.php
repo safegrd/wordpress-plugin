@@ -117,6 +117,12 @@ final class SafeGrd_Backup {
 			return $this->record_failure( $refusal, 'config', '' );
 		}
 		if ( ! $this->lock() ) {
+			// The slice holding the lock schedules the next when it ends. If
+			// the host stopped it, nothing will: ask again once its lock is
+			// stale, so the run does not wait for tomorrow's backup.
+			if ( is_array( get_option( self::JOB, null ) ) ) {
+				SafeGrd_Scheduler::continue_later( $this->stale_after() + 5 );
+			}
 			return array(
 				'status'  => 'busy',
 				'message' => 'A slice of this site\'s backup is running now.',
@@ -630,6 +636,13 @@ final class SafeGrd_Backup {
 		$this->job['files']++;
 		$this->job['file_bytes'] += $size;
 		$this->job['cursor']      = $rel;
+		/**
+		 * Fires after a file is added to the backup under way, before it is
+		 * saved: its blobs may still be in the open pack.
+		 *
+		 * @param string $rel The file's path in the snapshot.
+		 */
+		do_action( 'safegrd_file_stored', $rel );
 		return true;
 	}
 
@@ -640,6 +653,19 @@ final class SafeGrd_Backup {
 	 * sidecar, and commits the run; then records it with the server.
 	 */
 	private function finish() {
+		if ( ! empty( $this->job['finishing'] ) ) {
+			// An earlier finish stopped part way, and may have written some of
+			// this run's objects, which are written once. Finish as a new run:
+			// its index adopts every blob the stopped one uploaded.
+			$old                      = $this->job['run_id'];
+			$this->job['run_id']      = bin2hex( random_bytes( 16 ) );
+			$this->job['snapshot_id'] = 'snap-' . gmdate( 'Ymd-His' ) . '-' . substr( bin2hex( random_bytes( 4 ) ), 0, 6 );
+			SafeGrd_Repo_Cache::adopt( $this->job['epoch_id'], $this->job['run_id'] );
+			SafeGrd_Repo_Cache::retag_run( $this->job['epoch_id'], $old, $this->job['run_id'] );
+			$this->say( sprintf( 'Finishing again as %s', $this->job['snapshot_id'] ) );
+		}
+		$this->job['finishing'] = true;
+		$this->save_job();
 		$job = $this->job;
 		$this->say( 'Writing the snapshot' );
 		$db          = $job['db'];
@@ -1034,7 +1060,7 @@ final class SafeGrd_Backup {
 	 */
 	private function lock() {
 		$now   = time();
-		$stale = 0.0 === $this->budget ? 6 * HOUR_IN_SECONDS : (int) ceil( $this->budget * 3 + 60 );
+		$stale = $this->stale_after();
 		if ( add_option( self::LOCK, $now, '', 'no' ) ) {
 			return true;
 		}
@@ -1044,6 +1070,11 @@ final class SafeGrd_Backup {
 		}
 		delete_option( self::LOCK );
 		return add_option( self::LOCK, $now, '', 'no' );
+	}
+
+	/** Seconds after which a held lock belongs to a slice the host stopped. */
+	private function stale_after() {
+		return 0.0 === $this->budget ? 6 * HOUR_IN_SECONDS : (int) ceil( $this->budget * 3 + 60 );
 	}
 
 	private function unlock() {
