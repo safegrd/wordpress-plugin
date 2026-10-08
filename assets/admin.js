@@ -207,8 +207,9 @@
 			text(row.insertCell(), s.tables + " tables, " + s.files + " files, " + s.size + (s.verified ? ", test-restored" : ""));
 			var btn = document.createElement("button");
 			btn.type = "button";
-			btn.className = "button";
 			btn.textContent = "Restore";
+			btn.className = "button safegrd-restore-btn";
+			btn.disabled = restoring;
 			btn.addEventListener("click", function () { startRestore(s); });
 			row.insertCell().appendChild(btn);
 		});
@@ -220,15 +221,35 @@
 			"This site's database and content directory are replaced. The current ones are kept aside until you delete them.\n\n" +
 			"Afterwards this site's users are the backup's: sign in with an administrator account of the restored site.";
 		if (!window.confirm(msg)) return;
-		post("safegrd_restore_start", { snapshot: s.id }).then(function (r) {
-			notice("info", r.message);
-			watchRestore();
-		}).catch(function (e) { notice("error", e.message); });
+		setRestoring(true);
+		post("safegrd_restore_start", { snapshot: s.id }).then(function () {
+			watchRestore(500);
+		}).catch(function (e) {
+			setRestoring(false);
+			notice("error", e.message);
+		});
 	}
 
-	function watchRestore() {
+	// While a restore runs, its progress is the notice at the top of the
+	// page, and no other restore can start.
+	var restoring = !document.getElementById("safegrd-restore-progress").hidden;
+
+	function setRestoring(on) {
+		restoring = on;
+		Array.prototype.forEach.call(document.querySelectorAll(".safegrd-restore-btn"), function (b) { b.disabled = on; });
+	}
+
+	function showProgress(html) {
+		var box = document.getElementById("safegrd-restore-progress");
+		box.innerHTML = html || "";
+		box.hidden = !html;
+	}
+
+	function watchRestore(delay) {
 		var tick = function () {
 			post("safegrd_status", { local: "1" }).then(function (s) {
+				showProgress(s.progress);
+				setRestoring(!!s.restoring);
 				document.getElementById("safegrd-restore-state").innerHTML = s.restore;
 				bindDeleteCopy();
 				if (s.restoring) {
@@ -236,10 +257,11 @@
 				}
 			}).catch(function () {
 				// The session ends when the restored users replace this site's.
+				showProgress("");
 				notice("success", "The restore has finished or your session ended with it. Sign in with an administrator account of the restored site.");
 			});
 		};
-		setTimeout(tick, 3000);
+		setTimeout(tick, delay || 3000);
 	}
 
 	function bindDeleteCopy() {

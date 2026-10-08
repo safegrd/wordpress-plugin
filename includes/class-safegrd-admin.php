@@ -68,6 +68,8 @@ final class SafeGrd_Admin {
 			return;
 		}
 		echo '<div id="safegrd-notice" class="notice inline" hidden><p></p></div>';
+		$progress = self::describe_restore_progress();
+		echo '<div id="safegrd-restore-progress" class="notice notice-info inline"' . ( '' === $progress ? ' hidden' : '' ) . '>' . wp_kses_post( $progress ) . '</div>';
 		if ( ! SafeGrd_Settings::connected() ) {
 			self::render_connect();
 		} else {
@@ -180,20 +182,52 @@ final class SafeGrd_Admin {
 	}
 
 	/**
-	 * The restore under way, or the last one, in HTML.
+	 * The restore under way, in HTML for the notice at the top of the page:
+	 * which backup, the stage with its counts, and how long it has run.
+	 * Empty when no restore is running.
+	 */
+	public static function describe_restore_progress() {
+		$job = SafeGrd_Restore::job();
+		if ( ! $job ) {
+			return '';
+		}
+		$parts  = (int) ( $job['parts'] ?? 0 );
+		$stages = array(
+			'plan'     => 'Reading the backup.',
+			'database' => $parts > 0
+				? sprintf( 'Loading the database into new tables: part %d of %d.', min( (int) ( $job['part'] ?? 0 ) + 1, $parts ), $parts )
+				: 'Loading the database into new tables.',
+			'tables'   => 'Checking the tables against the backup.',
+			'files'    => sprintf(
+				'Writing the files: %d of %d, %s so far.',
+				(int) $job['files'],
+				(int) ( $job['total_files'] ?? 0 ),
+				size_format( (int) ( $job['bytes'] ?? 0 ), 1 )
+			),
+			'swap'     => 'Swapping the restored site in.',
+			'done'     => 'Finishing.',
+		);
+		$started = (int) ( $job['started'] ?? 0 );
+		$taken   = empty( $job['taken_at'] ) ? '' : ' (taken ' . self::when( $job['taken_at'] ) . ')';
+		$s       = '<p><strong>Restoring ' . esc_html( $job['snapshot_id'] . $taken ) . '.</strong> ' . esc_html( $stages[ $job['stage'] ] ?? $job['stage'] ) . '</p>';
+		$s      .= '<p>' . esc_html(
+			sprintf(
+				'Started %s, %s ago, in %d slices so far. The site runs as it is until the swap. This page updates on its own.',
+				wp_date( 'H:i', $started ),
+				human_time_diff( $started ),
+				(int) ( $job['slices'] ?? 0 )
+			)
+		) . '</p>';
+		return $s;
+	}
+
+	/**
+	 * The last restore, in HTML. A restore under way is described at the top
+	 * of the page instead.
 	 */
 	public static function describe_restore() {
-		$job = SafeGrd_Restore::job();
-		if ( $job ) {
-			$stages = array(
-				'plan'     => 'reading the backup',
-				'database' => 'loading the database into new tables',
-				'tables'   => 'checking the tables',
-				'files'    => sprintf( 'writing the files (%d of %d)', (int) $job['files'], (int) ( $job['total_files'] ?? 0 ) ),
-				'swap'     => 'swapping the restored site in',
-				'done'     => 'finishing',
-			);
-			return '<p><strong>Restoring ' . esc_html( $job['snapshot_id'] ) . ':</strong> ' . esc_html( $stages[ $job['stage'] ] ?? $job['stage'] ) . '. The site runs as it is until the swap.</p>';
+		if ( SafeGrd_Restore::job() ) {
+			return '<p>A restore is under way. Its progress is at the top of this page.</p>';
 		}
 		$last = get_option( SafeGrd_Restore::LAST, array() );
 		if ( ! $last ) {
@@ -321,6 +355,7 @@ final class SafeGrd_Admin {
 			'restoring' => (bool) SafeGrd_Restore::job(),
 			'last'      => self::describe_run( SafeGrd_Settings::last_run() ),
 			'restore'   => self::describe_restore(),
+			'progress'  => self::describe_restore_progress(),
 		);
 		if ( SafeGrd_Settings::connected() && empty( $_POST['local'] ) ) {
 			$client = SafeGrd_Client::for_site();
