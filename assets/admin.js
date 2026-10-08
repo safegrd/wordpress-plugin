@@ -113,7 +113,7 @@
 		var table = document.createElement("table");
 		table.className = "widefat striped";
 		var head = table.createTHead().insertRow();
-		["Snapshot", "Taken", "Status", "Size", "Locked until"].forEach(function (h) {
+		["Taken", "Kind", "Site size", "Uploaded", "Status", "Locked until"].forEach(function (h) {
 			var th = document.createElement("th");
 			th.textContent = h;
 			head.appendChild(th);
@@ -121,18 +121,26 @@
 		var body = table.createTBody();
 		list.forEach(function (s) {
 			var row = body.insertRow();
-			[s.id, s.created, s.status, s.size, s.locked].forEach(function (v) {
+			[s.created, s.kind, s.site, s.size, s.status, s.locked].forEach(function (v) {
 				text(row.insertCell(), v || "");
 			});
+			row.title = s.id;
 		});
 		box.appendChild(table);
 	}
 
 	// Hosted storage held against the plan, and the server's warning in
 	// its own words: refused, billed or in grace, from 80% of the plan.
-	function showStorage(line, warning) {
+	function showStorage(line, warning, used, quota) {
 		var el = document.getElementById("safegrd-storage");
 		if (!el || !line) return;
+		var meter = document.getElementById("safegrd-meter");
+		if (meter && quota > 0) {
+			var pct = Math.min(100, used * 100 / quota);
+			meter.firstElementChild.style.width = Math.max(pct, 0.5) + "%";
+			meter.className = "safegrd-meter" + (pct >= 100 ? " is-full" : pct >= 80 ? " is-high" : "");
+			meter.hidden = false;
+		}
 		el.textContent = line + ".";
 		if (warning) {
 			var w = document.createElement("strong");
@@ -158,8 +166,23 @@
 			document.getElementById("safegrd-last").innerHTML = s.last;
 			backupBtn.disabled = !!s.running;
 			if (!local) {
-				if (s.drill) document.getElementById("safegrd-drill").textContent = s.drill;
-				showStorage(s.storage, s.storage_warning);
+				if (s.drill) {
+					var drill = document.getElementById("safegrd-drill");
+					drill.textContent = s.drill;
+					if (s.drill_next) {
+						var next = document.createElement("span");
+						next.className = "description";
+						next.textContent = " " + s.drill_next + " ";
+						drill.appendChild(next);
+						var plans = document.createElement("a");
+						plans.href = cfg.server + "/pricing";
+						plans.target = "_blank";
+						plans.rel = "noopener";
+						plans.textContent = "What each plan tests";
+						drill.appendChild(plans);
+					}
+				}
+				showStorage(s.storage, s.storage_warning, s.storage_used, s.storage_quota);
 				renderSnapshots(s.snapshots, s.snapshots_error);
 			}
 			return s;
@@ -201,6 +224,21 @@
 				document.getElementById("safegrd-next").textContent = r.next;
 				notice("success", r.message);
 			}).catch(function (e) { notice("error", e.message); }).then(function () { frequency.disabled = false; });
+		});
+	}
+
+	var copy = document.getElementById("safegrd-copy-diagnostics");
+	if (copy) {
+		copy.addEventListener("click", function () {
+			var area = document.getElementById("safegrd-diagnostics");
+			area.select();
+			var done = function () { copy.textContent = "Copied"; };
+			if (navigator.clipboard) {
+				navigator.clipboard.writeText(area.value).then(done, function () { document.execCommand("copy"); done(); });
+			} else {
+				document.execCommand("copy");
+				done();
+			}
 		});
 	}
 

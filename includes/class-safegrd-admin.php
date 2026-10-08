@@ -52,6 +52,7 @@ final class SafeGrd_Admin {
 			'SafeGrdAdmin',
 			array(
 				'ajax'     => admin_url( 'admin-ajax.php' ),
+				'server'   => SafeGrd_Settings::server_url(),
 				'nonce'    => wp_create_nonce( self::NONCE ),
 				// The page runs slices itself where the site cannot reach itself.
 				'loopback' => SafeGrd_Settings::connected() && '' === SafeGrd_Scheduler::loopback_problem(),
@@ -75,7 +76,13 @@ final class SafeGrd_Admin {
 		if ( SafeGrd_Settings::connected() ) {
 			$loopback = SafeGrd_Scheduler::loopback_problem();
 			if ( '' !== $loopback ) {
-				echo '<div id="safegrd-loopback" class="notice notice-warning inline"><p><strong>' . esc_html( $loopback ) . '</strong></p><p>' . esc_html( SafeGrd_Scheduler::loopback_remedy() ) . '</p></div>';
+				echo '<div id="safegrd-loopback" class="notice notice-warning inline"><p><strong>' . esc_html( $loopback ) . '</strong></p><p>' . esc_html( SafeGrd_Scheduler::loopback_remedy( true ) ) . '</p></div>';
+			}
+		}
+		if ( SafeGrd_Settings::connected() ) {
+			$health = self::describe_health();
+			if ( $health ) {
+				echo '<div id="safegrd-health" class="notice notice-' . esc_attr( $health[0] ) . ' inline safegrd-health"><p><strong>' . esc_html( $health[1] ) . '</strong> ' . esc_html( $health[2] ) . '</p></div>';
 			}
 		}
 		$progress = self::describe_restore_progress();
@@ -130,44 +137,67 @@ final class SafeGrd_Admin {
 		$custody = SafeGrd_Settings::get( 'key_custody' );
 		$next    = SafeGrd_Scheduler::next_run();
 		?>
-		<div class="safegrd-card" id="safegrd-status">
-			<h2>Backups</h2>
-			<table class="form-table" role="presentation">
-				<tr><th scope="row">Last backup</th><td id="safegrd-last"><?php echo wp_kses_post( self::describe_run( $run ) ); ?></td></tr>
-				<tr><th scope="row">Next backup</th><td>
-					<span id="safegrd-next"><?php echo esc_html( $next ? wp_date( 'Y-m-d H:i', $next ) : 'Not scheduled' ); ?></span>
-					<label for="safegrd-frequency" class="screen-reader-text">How often</label>
-					<select id="safegrd-frequency">
-						<?php foreach ( array( 'daily' => 'Daily', 'weekly' => 'Weekly' ) as $value => $label ) : ?>
-							<option value="<?php echo esc_attr( $value ); ?>" <?php selected( SafeGrd_Scheduler::frequency(), $value ); ?>><?php echo esc_html( $label ); ?></option>
-						<?php endforeach; ?>
-					</select>
-				</td></tr>
-				<tr><th scope="row">Last test restore</th><td id="safegrd-drill">Asking SafeGrd...</td></tr>
-				<tr><th scope="row">Storage</th><td>SafeGrd hosted storage, locked against deletion.<br><span id="safegrd-storage">Asking SafeGrd...</span></td></tr>
-				<tr><th scope="row">Key</th><td>
+		<div class="safegrd-grid" id="safegrd-status">
+			<div class="safegrd-card">
+				<h2>Backups</h2>
+				<table class="form-table" role="presentation">
+					<tr><th scope="row">Last backup</th><td id="safegrd-last"><?php echo wp_kses_post( self::describe_run( $run ) ); ?></td></tr>
+					<tr><th scope="row">Next backup</th><td>
+						<span id="safegrd-next"><?php echo esc_html( $next ? wp_date( 'Y-m-d H:i', $next ) : 'Not scheduled' ); ?></span>
+						<label for="safegrd-frequency" class="screen-reader-text">How often</label>
+						<select id="safegrd-frequency">
+							<?php foreach ( array( 'daily' => 'Daily', 'weekly' => 'Weekly' ) as $value => $label ) : ?>
+								<option value="<?php echo esc_attr( $value ); ?>" <?php selected( SafeGrd_Scheduler::frequency(), $value ); ?>><?php echo esc_html( $label ); ?></option>
+							<?php endforeach; ?>
+						</select>
+					</td></tr>
+					<tr><th scope="row">Last test restore</th><td id="safegrd-drill">Asking SafeGrd...</td></tr>
+				</table>
+				<p>
+					<button type="button" class="button button-primary" id="safegrd-backup-btn" <?php disabled( SafeGrd_Backup::running() ); ?>>Back up now</button>
+					<a class="button" href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/dashboard' ); ?>" target="_blank" rel="noopener">Open SafeGrd</a>
+				</p>
+			</div>
+			<div class="safegrd-card">
+				<h2>Storage</h2>
+				<div class="safegrd-meter" id="safegrd-meter" hidden><span></span></div>
+				<p id="safegrd-storage">Asking SafeGrd...</p>
+				<p class="description">SafeGrd hosted storage, locked against deletion: Object Lock in compliance mode keeps each backup until its date, and no one can delete it sooner.</p>
+				<p>
 					<?php if ( 'safegrd' === $custody ) : ?>
 						<strong>SafeGrd-managed key.</strong> SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
 					<?php else : ?>
 						<strong>Customer-managed key.</strong> Only you can decrypt these backups.
 					<?php endif; ?>
-				</td></tr>
-			</table>
-			<p>
-				<button type="button" class="button button-primary" id="safegrd-backup-btn" <?php disabled( SafeGrd_Backup::running() ); ?>>Back up now</button>
-				<a class="button" href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/dashboard' ); ?>" target="_blank" rel="noopener">Open SafeGrd</a>
-			</p>
-			<h3>Recent backups</h3>
+				</p>
+			</div>
+		</div>
+		<div class="safegrd-card">
+			<h2>Recent backups</h2>
+			<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. Each one is still a complete copy of the site, and restores on its own.</p>
 			<div id="safegrd-snapshots"><p class="description">Asking SafeGrd...</p></div>
-			<h3>Restore</h3>
+		</div>
+		<div class="safegrd-card">
+			<h2>Restore or move a site</h2>
 			<p>Restore any WordPress site's backup in this account onto this site: a new install, or this site as it was. This site's database and content directory are replaced, and the ones it had are kept aside until you delete them. <code>wp-config.php</code> stays this site's own.</p>
+			<p class="description">To move a site to a new host or address, install WordPress and this plugin there, connect it to the same SafeGrd account, and restore the old site's backup. Its address is replaced with the new one, in serialized options too, and a different table prefix is handled.</p>
 			<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
 			<div id="safegrd-restore-list"><p class="description">Asking SafeGrd...</p></div>
 			<p class="description">A backup taken with a customer-managed key restores with the safegrd command line tool and that key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
-			<hr>
-			<p class="description">Node <?php echo esc_html( SafeGrd_Settings::get( 'node_id' ) ); ?> on <?php echo esc_html( SafeGrd_Settings::server_url() ); ?>.
-				<a href="#" id="safegrd-disconnect">Disconnect this site</a>. Backups already taken stay in SafeGrd.</p>
 		</div>
+		<div class="safegrd-card">
+			<h2>Help</h2>
+			<p>
+				<a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress' ); ?>" target="_blank" rel="noopener">WordPress guide</a>
+				&middot; <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/contact' ); ?>" target="_blank" rel="noopener">Contact support</a>
+				&middot; <a href="mailto:support@safegrd.dev">support@safegrd.dev</a>
+			</p>
+			<p class="description">Support asks for these first. They hold no token or key.</p>
+			<textarea readonly rows="6" class="large-text code" id="safegrd-diagnostics"><?php echo esc_textarea( self::diagnostics() ); ?></textarea>
+			<p><button type="button" class="button" id="safegrd-copy-diagnostics">Copy diagnostics</button></p>
+		</div>
+		<p class="description">Node <?php echo esc_html( SafeGrd_Settings::get( 'node_id' ) ); ?> on <?php echo esc_html( SafeGrd_Settings::server_url() ); ?>.
+			<a href="#" id="safegrd-disconnect">Disconnect this site</a>. Backups already taken stay in SafeGrd.</p>
 		<?php
 	}
 
@@ -273,6 +303,52 @@ final class SafeGrd_Admin {
 	}
 
 	/**
+	 * What support needs to know about this site, as plain text: versions,
+	 * limits, the loopback check and the last run. Never a token or a key.
+	 */
+	private static function diagnostics() {
+		global $wpdb;
+		$run   = SafeGrd_Settings::last_run();
+		$lines = array(
+			'SafeGrd Backup ' . SAFEGRD_VERSION,
+			'WordPress ' . get_bloginfo( 'version' ) . ', PHP ' . PHP_VERSION . ', ' . ( method_exists( $wpdb, 'db_server_info' ) ? $wpdb->db_server_info() : 'database unknown' ),
+			'Site ' . home_url() . ( is_multisite() ? ' (multisite)' : '' ),
+			'Server ' . SafeGrd_Settings::server_url() . ', node ' . SafeGrd_Settings::get( 'node_id' ) . ', organization ' . SafeGrd_Settings::get( 'org_id' ),
+			'Key ' . ( 'safegrd' === SafeGrd_Settings::get( 'key_custody' ) ? 'SafeGrd-managed' : 'customer-managed' ) . ', schedule ' . SafeGrd_Scheduler::frequency(),
+			'max_execution_time ' . (int) ini_get( 'max_execution_time' ) . ', memory_limit ' . ini_get( 'memory_limit' ) . ', slice ' . SafeGrd_Backup::default_budget() . ' s',
+			'WP-Cron ' . ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ? 'disabled (DISABLE_WP_CRON)' : 'on' ) . ( defined( 'ALTERNATE_WP_CRON' ) && ALTERNATE_WP_CRON ? ', ALTERNATE_WP_CRON' : '' ),
+			'Loopback ' . ( '' === SafeGrd_Scheduler::loopback_problem() ? 'works' : SafeGrd_Scheduler::loopback_problem() ),
+		);
+		if ( $run ) {
+			$lines[] = 'Last run ' . ( $run['status'] ?? '' ) . ' ' . ( $run['snapshot_id'] ?? '' ) . ' ' . ( $run['finished_at'] ?? ( $run['started_at'] ?? '' ) ) . ( empty( $run['message'] ) ? '' : ': ' . $run['message'] );
+		}
+		return implode( "\n", $lines );
+	}
+
+	/**
+	 * How often the plan test-restores and when the next is due, in the
+	 * server's terms, or why the next cannot run. Empty when the server did
+	 * not say.
+	 *
+	 * @param array|WP_Error $node GET /api/v1/nodes/{id}.
+	 */
+	private static function describe_next_drill( $node ) {
+		if ( is_wp_error( $node ) || empty( $node['next'] ) ) {
+			return '';
+		}
+		$n = $node['next'];
+		if ( ! empty( $n['drill_blocked'] ) ) {
+			return 'The next cannot run: ' . rtrim( $n['drill_blocked'], '.' ) . '.';
+		}
+		$s = empty( $n['drill_cadence'] ) ? '' : sprintf( '%s on your plan.', $n['drill_cadence'] );
+		if ( ! empty( $n['drill_at'] ) ) {
+			$at = strtotime( $n['drill_at'] );
+			$s .= ' ' . ( $at <= time() + 60 ? 'The next is due now.' : sprintf( 'The next is due %s.', wp_date( 'Y-m-d H:i', $at ) ) );
+		}
+		return trim( $s );
+	}
+
+	/**
 	 * The last run in one line of HTML.
 	 */
 	public static function describe_run( array $run ) {
@@ -295,7 +371,7 @@ final class SafeGrd_Admin {
 			case 'completed':
 				$s = sprintf(
 					'<strong>Completed</strong> %s: %d tables, %d rows, %d files, %s uploaded in %ss.',
-					esc_html( self::when( $run['finished_at'] ) ),
+					esc_html( self::when_ago( $run['finished_at'] ) ),
 					(int) $run['tables'],
 					(int) $run['rows'],
 					(int) $run['files'],
@@ -313,9 +389,40 @@ final class SafeGrd_Admin {
 				}
 				return $s;
 			case 'failed':
-				return '<strong class="safegrd-warn">Failed</strong> ' . esc_html( self::when( $run['finished_at'] ) ) . ': ' . esc_html( $run['message'] );
+				return '<strong class="safegrd-warn">Failed</strong> ' . esc_html( self::when_ago( $run['finished_at'] ) ) . ': ' . esc_html( $run['message'] );
 		}
 		return esc_html( $run['status'] );
+	}
+
+	/** A time as a date and how long ago: "2026-10-08 18:57, 3 mins ago". */
+	private static function when_ago( $iso ) {
+		$t = strtotime( (string) $iso );
+		return $t ? wp_date( 'Y-m-d H:i', $t ) . ', ' . human_time_diff( $t ) . ' ago' : '';
+	}
+
+	/**
+	 * The one line at the top of the page: whether this site is backed up,
+	 * and what to look at when it is not.
+	 */
+	private static function describe_health() {
+		$run = SafeGrd_Settings::last_run();
+		if ( SafeGrd_Restore::job() ) {
+			return '';
+		}
+		if ( ! $run ) {
+			return array( 'warning', 'Not backed up yet.', 'The first backup starts on the next page load, or press Back up now.' );
+		}
+		if ( 'running' === $run['status'] ) {
+			return array( 'info', 'Backing up now.', 'Started ' . self::when_ago( $run['started_at'] ?? '' ) . '.' );
+		}
+		if ( 'failed' === $run['status'] ) {
+			return array( 'error', 'The last backup failed.', (string) $run['message'] );
+		}
+		$t = strtotime( (string) ( $run['finished_at'] ?? '' ) );
+		if ( $t && time() - $t > 2 * ( 'weekly' === SafeGrd_Scheduler::frequency() ? WEEK_IN_SECONDS : DAY_IN_SECONDS ) ) {
+			return array( 'warning', 'No backup for ' . human_time_diff( $t ) . '.', 'This site backs up ' . SafeGrd_Scheduler::frequency() . '. Check the loopback notice above, if there is one, or press Back up now.' );
+		}
+		return array( 'success', 'Protected.', 'Backed up ' . human_time_diff( $t ) . ' ago, encrypted and locked against deletion.' );
 	}
 
 	private static function when( $iso ) {
@@ -421,6 +528,8 @@ final class SafeGrd_Admin {
 						'status'  => $s['status'] ?? '',
 						'created' => self::when( $s['created_at'] ?? '' ),
 						'size'    => size_format( (int) ( $s['encrypted_size_bytes'] ?? 0 ), 1 ),
+						'site'    => size_format( (int) ( $s['raw_size_bytes'] ?? 0 ), 1 ),
+						'kind'    => 'opening' === ( $s['object_class'] ?? '' ) ? 'Full, the month\'s first' : ( 'later' === ( $s['object_class'] ?? '' ) ? 'Changes only' : '' ),
 						'locked'  => substr( (string) ( $s['worm_retention_until'] ?? '' ), 0, 10 ),
 					);
 				}
@@ -433,6 +542,8 @@ final class SafeGrd_Admin {
 			} else {
 				$out['storage']         = $storage['line'];
 				$out['storage_warning'] = $storage['warning'];
+				$out['storage_used']    = $storage['used'];
+				$out['storage_quota']   = $storage['quota'];
 			}
 			$drills = $client->call( 'GET', '/api/v1/verifications?node_id=' . $node . '&limit=1', null, 15 );
 			if ( ! is_wp_error( $drills ) ) {
@@ -446,9 +557,10 @@ final class SafeGrd_Admin {
 						'passed' === ( $v['status'] ?? '' ) ? 'every table, file and attachment checked' : ( $v['error_message'] ?? '' )
 					);
 				} else {
-					$out['drill'] = 'None yet. SafeGrd test-restores the newest backup on your plan\'s schedule.';
+					$out['drill'] = 'None yet.';
 				}
 			}
+			$out['drill_next'] = self::describe_next_drill( $client->call( 'GET', '/api/v1/nodes/' . $node, null, 15 ) );
 		}
 		wp_send_json_success( $out );
 	}

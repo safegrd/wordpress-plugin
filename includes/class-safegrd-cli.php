@@ -247,6 +247,9 @@ final class SafeGrd_CLI {
 	 * @when after_wp_load
 	 */
 	public function schedule( $args, $assoc ) {
+		if ( ! SafeGrd_Settings::connected() ) {
+			WP_CLI::error( 'Not connected. Run wp safegrd connect first: connecting schedules the first backup at once.' );
+		}
 		if ( ! SafeGrd_Scheduler::set_frequency( $args[0] ) ) {
 			WP_CLI::error( sprintf( '%s is not a schedule the plugin runs. Use daily or weekly.', $args[0] ) );
 		}
@@ -268,7 +271,7 @@ final class SafeGrd_CLI {
 		WP_CLI::line( 'Server:   ' . SafeGrd_Settings::server_url() );
 		WP_CLI::line( 'Node:     ' . SafeGrd_Settings::get( 'node_id' ) );
 		WP_CLI::line( 'Custody:  ' . ( 'safegrd' === SafeGrd_Settings::get( 'key_custody' ) ? 'SafeGrd-managed key' : 'customer-managed key' ) );
-		$loopback = SafeGrd_Scheduler::loopback_problem( true );
+		$loopback = SafeGrd_Scheduler::loopback_problem();
 		if ( '' !== $loopback ) {
 			WP_CLI::warning( $loopback . ' ' . SafeGrd_Scheduler::loopback_remedy() );
 		}

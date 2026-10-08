@@ -328,6 +328,7 @@ final class SafeGrd_Restore {
 			throw new SafeGrd_Exception( esc_html( 'The snapshot object names another snapshot.' ), 'other' );
 		}
 		$this->reader->load_index( $snap );
+		$this->reader->prefetch_trees();
 		$entries = $this->reader->walk( $snap['root_tree'] );
 
 		// The content root of the trees, as SafeGrd recorded it.
@@ -790,10 +791,14 @@ final class SafeGrd_Restore {
 			$this->job['seq'] = $this->job['parts'];
 			$this->say( 'Writing the files' );
 		}
-		$last = $this->job['parts'] + $this->job['total_files'];
+		$last    = $this->job['parts'] + $this->job['total_files'];
+		$fetched = $this->job['seq'];
 		for ( ; $this->job['seq'] < $last; $this->job['seq']++ ) {
 			if ( $this->out_of_time() ) {
 				return false;
+			}
+			if ( $this->job['seq'] >= $fetched ) {
+				$fetched = $this->prefetch_from( $this->job['seq'], $last );
 			}
 			$row = $this->row( $this->job['seq'] );
 			if ( 0 !== strpos( $row['path'], $prefix ) ) {
@@ -831,6 +836,27 @@ final class SafeGrd_Restore {
 		}
 		$this->say( sprintf( 'Wrote %d files, %s, each matching the backup', $this->job['files'], size_format( $this->job['bytes'] ) ) );
 		return true;
+	}
+
+	/**
+	 * Fetches the blobs of the files from $seq on, up to 24 MB or 300
+	 * files, in as few requests as their places in the packs allow.
+	 *
+	 * @return int The first seq not fetched ahead.
+	 */
+	private function prefetch_from( $seq, $last ) {
+		$ids   = array();
+		$bytes = 0;
+		$end   = $seq;
+		for ( ; $end < $last && $end - $seq < 300 && $bytes < 25165824; $end++ ) {
+			$row = $this->row( $end );
+			if ( '' !== $row['content'] ) {
+				$ids = array_merge( $ids, explode( ',', $row['content'] ) );
+			}
+			$bytes += (int) $row['size'];
+		}
+		$this->reader->prefetch( $ids );
+		return $end;
 	}
 
 	/** The content directory's path in the snapshot: wp-content, normally. */

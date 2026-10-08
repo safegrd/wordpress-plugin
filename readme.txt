@@ -1,10 +1,10 @@
-=== SafeGrd Backup: Encrypted WordPress Backups, Test-Restored ===
+=== SafeGrd Backup ===
 Contributors: safegrd
 Tags: backup, wordpress backup, database backup, restore, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.1
+Stable tag: 0.1.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -104,6 +104,18 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 4. Approving the sign-in in the tab that opens, with the code to check. The page finishes connecting on its own.
 
 == Changelog ==
+
+= 0.1.2 =
+* Tools, SafeGrd opens with one line saying whether the site is backed up, and sections for backups, storage, recent backups, restore and help.
+* Hosted storage held against the plan, with SafeGrd's warning from 80%, on the Tools page and in wp safegrd status.
+* Back up daily or weekly: on the Tools page, or wp safegrd schedule weekly.
+* Recent backups say which uploaded every file and which only what changed, beside the site's size.
+* "Locked until" is the date Object Lock holds the backup to, as SafeGrd records it.
+* The Tools page says how often your plan test-restores and when the next is due.
+* A site that cannot reach itself is told so, with what to do, and the Tools page runs the backup or restore itself while it is open.
+* A restore no longer starts a backup at once: the next is one interval after it.
+* Restores read neighbouring files and folders in one request: the first stage went from minutes to seconds on a site of 3,500 files.
+* Help: the WordPress guide, support, and diagnostics to copy into a request.
 
 = 0.1.1 =
 * A restore's progress shows at the top of Tools, SafeGrd, and survives a reload.

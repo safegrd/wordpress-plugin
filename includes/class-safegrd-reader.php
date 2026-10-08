@@ -176,6 +176,13 @@ final class SafeGrd_Repo_Reader {
 	private $pack_keys = array();
 	/** @var array blob id => location */
 	private $index = array();
+	/** @var array blob id => its sealed record, fetched ahead by prefetch() */
+	private $records = array();
+
+	/** Neighbouring blobs closer than this are fetched in one request. */
+	const PREFETCH_GAP = 262144;
+	/** No one prefetch request reads more than this. */
+	const PREFETCH_SPAN = 16777216;
 
 	/**
 	 * @param SafeGrd_Client $client   Node-token client.
@@ -299,6 +306,73 @@ final class SafeGrd_Repo_Reader {
 	}
 
 	/**
+	 * Fetches the sealed records of these blobs ahead of blob(), with one
+	 * ranged GET per run of neighbours in a pack instead of one per blob:
+	 * a site's small files sit side by side in its packs, and each GET is a
+	 * round trip to storage. blob() still checks every record against its
+	 * id; a blob prefetch did not reach is fetched on its own.
+	 */
+	public function prefetch( array $ids ) {
+		$by_pack = array();
+		foreach ( array_unique( $ids ) as $id ) {
+			if ( isset( $this->index[ $id ] ) && ! isset( $this->records[ $id ] ) ) {
+				$by_pack[ $this->index[ $id ][0] ][] = $id;
+			}
+		}
+		foreach ( $by_pack as $pack => $blobs ) {
+			usort(
+				$blobs,
+				function ( $a, $b ) {
+					return $this->index[ $a ][1] - $this->index[ $b ][1];
+				}
+			);
+			$span = array();
+			foreach ( $blobs as $id ) {
+				$off = $this->index[ $id ][1];
+				$end = $off + $this->index[ $id ][2];
+				if ( $span && ( $off - $span['end'] > self::PREFETCH_GAP || $end - $span['from'] > self::PREFETCH_SPAN ) ) {
+					$this->fetch_span( $pack, $span );
+					$span = array();
+				}
+				if ( ! $span ) {
+					$span = array(
+						'from' => $off,
+						'end'  => $end,
+						'ids'  => array(),
+					);
+				}
+				$span['end']   = max( $span['end'], $end );
+				$span['ids'][] = $id;
+			}
+			if ( $span ) {
+				$this->fetch_span( $pack, $span );
+			}
+		}
+	}
+
+	/**
+	 * Fetches every tree blob the index lists, ahead of walk(): a backup
+	 * writes its trees together, so they come in a few requests instead of
+	 * one per directory.
+	 */
+	public function prefetch_trees() {
+		$ids = array();
+		foreach ( $this->index as $id => $loc ) {
+			if ( SafeGrd_Repo_Format::TREE === ( $loc[4] & 0x7f ) ) {
+				$ids[] = $id;
+			}
+		}
+		$this->prefetch( $ids );
+	}
+
+	private function fetch_span( $pack, array $span ) {
+		$bytes = $this->get( $this->prefix . '/packs/' . $pack, $span['from'], $span['end'] - $span['from'] );
+		foreach ( $span['ids'] as $id ) {
+			$this->records[ $id ] = substr( $bytes, $this->index[ $id ][1] - $span['from'], $this->index[ $id ][2] );
+		}
+	}
+
+	/**
 	 * One blob's plaintext, checked against its id.
 	 */
 	public function blob( $id ) {
@@ -309,7 +383,12 @@ final class SafeGrd_Repo_Reader {
 		if ( $type & 0x80 ) {
 			throw new SafeGrd_Exception( esc_html( 'This backup was written by a newer client with compression the plugin cannot read. Restore it with the safegrd CLI.' ), 'other' );
 		}
-		$record = $this->get( $this->prefix . '/packs/' . $pack, $offset, $length );
+		if ( isset( $this->records[ $id ] ) ) {
+			$record = $this->records[ $id ];
+			unset( $this->records[ $id ] );
+		} else {
+			$record = $this->get( $this->prefix . '/packs/' . $pack, $offset, $length );
+		}
 		$plain  = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt( substr( $record, 24 ), hex2bin( $id ) . chr( $type ), substr( $record, 0, 24 ), $this->pack_key( $pack ) );
 		if ( false === $plain || strlen( $plain ) !== $raw || hash( 'sha256', $plain ) !== $id ) {
 			throw new SafeGrd_Exception( esc_html( 'Blob ' . $id . ' does not authenticate or does not match its id: the backup was altered.' ), 'other' );

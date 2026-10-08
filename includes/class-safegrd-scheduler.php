@@ -184,7 +184,7 @@ final class SafeGrd_Scheduler {
 			)
 		);
 		if ( is_wp_error( $resp ) ) {
-			$problem = sprintf( 'This site cannot reach itself at %s: %s', $url, $resp->get_error_message() );
+			$problem = sprintf( 'This site cannot reach itself at %s: %s.', $url, rtrim( $resp->get_error_message(), '.' ) );
 		} elseif ( 'safegrd-ok' !== trim( wp_remote_retrieve_body( $resp ) ) ) {
 			$problem = sprintf( 'This site reached %s but got HTTP %d instead of the plugin\'s answer. A security plugin, firewall or host rule may block requests to admin-ajax.php.', $url, (int) wp_remote_retrieve_response_code( $resp ) );
 		} else {
@@ -194,12 +194,18 @@ final class SafeGrd_Scheduler {
 		return $problem;
 	}
 
-	/** What to do about a site that cannot reach itself. */
-	public static function loopback_remedy() {
-		return sprintf(
-			'Scheduled backups do not run until it can. Run WP-Cron from the server\'s cron instead (*/15 * * * * cd %s && wp cron event run --due-now), or add define( \'ALTERNATE_WP_CRON\', true ); to wp-config.php. While this page is open, it runs a backup or restore itself.',
+	/**
+	 * What to do about a site that cannot reach itself.
+	 *
+	 * @param bool $page Whether it is said on the Tools page, which runs
+	 *                   a backup or restore itself while it is open.
+	 */
+	public static function loopback_remedy( $page = false ) {
+		$s = sprintf(
+			'Scheduled backups do not run until it can. Run WP-Cron from the server\'s cron instead (*/15 * * * * cd %s && wp cron event run --due-now), or add define( \'ALTERNATE_WP_CRON\', true ); to wp-config.php.',
 			untrailingslashit( ABSPATH )
 		);
+		return $page ? $s . ' While this page is open, it runs a backup or restore itself.' : $s;
 	}
 
 	/**

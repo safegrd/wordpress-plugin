@@ -1090,7 +1090,7 @@ final class SafeGrd_Backup {
 	 * gave one (from 80%, in the plan's own terms: refused, billed or in
 	 * grace). The plugin knows no quota of its own.
 	 *
-	 * @return array{line:string,warning:string}|WP_Error
+	 * @return array{line:string,warning:string,used:int,quota:int}|WP_Error
 	 */
 	public static function storage_usage() {
 		$info = SafeGrd_Client::for_site()->call( 'GET', '/api/v1/nodes/' . rawurlencode( SafeGrd_Settings::get( 'node_id' ) ) . '/hosted', null, 15 );
@@ -1105,6 +1105,8 @@ final class SafeGrd_Backup {
 		return array(
 			'line'    => $line,
 			'warning' => (string) ( $info['warning'] ?? '' ),
+			'used'    => $used,
+			'quota'   => $quota,
 		);
 	}
 
