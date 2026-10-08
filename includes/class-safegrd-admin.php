@@ -18,6 +18,8 @@ final class SafeGrd_Admin {
 		add_action( 'wp_ajax_safegrd_connect_start', array( __CLASS__, 'ajax_connect_start' ) );
 		add_action( 'wp_ajax_safegrd_connect_poll', array( __CLASS__, 'ajax_connect_poll' ) );
 		add_action( 'wp_ajax_safegrd_backup_now', array( __CLASS__, 'ajax_backup_now' ) );
+		add_action( 'wp_ajax_safegrd_set_frequency', array( __CLASS__, 'ajax_set_frequency' ) );
+		add_action( 'wp_ajax_safegrd_tick', array( __CLASS__, 'ajax_tick' ) );
 		add_action( 'wp_ajax_safegrd_status', array( __CLASS__, 'ajax_status' ) );
 		add_action( 'wp_ajax_safegrd_disconnect', array( __CLASS__, 'ajax_disconnect' ) );
 		add_action( 'wp_ajax_safegrd_restore_list', array( __CLASS__, 'ajax_restore_list' ) );
@@ -49,8 +51,10 @@ final class SafeGrd_Admin {
 			'safegrd-admin',
 			'SafeGrdAdmin',
 			array(
-				'ajax'  => admin_url( 'admin-ajax.php' ),
-				'nonce' => wp_create_nonce( self::NONCE ),
+				'ajax'     => admin_url( 'admin-ajax.php' ),
+				'nonce'    => wp_create_nonce( self::NONCE ),
+				// The page runs slices itself where the site cannot reach itself.
+				'loopback' => SafeGrd_Settings::connected() && '' === SafeGrd_Scheduler::loopback_problem(),
 			)
 		);
 	}
@@ -68,6 +72,12 @@ final class SafeGrd_Admin {
 			return;
 		}
 		echo '<div id="safegrd-notice" class="notice inline" hidden><p></p></div>';
+		if ( SafeGrd_Settings::connected() ) {
+			$loopback = SafeGrd_Scheduler::loopback_problem();
+			if ( '' !== $loopback ) {
+				echo '<div id="safegrd-loopback" class="notice notice-warning inline"><p><strong>' . esc_html( $loopback ) . '</strong></p><p>' . esc_html( SafeGrd_Scheduler::loopback_remedy() ) . '</p></div>';
+			}
+		}
 		$progress = self::describe_restore_progress();
 		echo '<div id="safegrd-restore-progress" class="notice notice-info inline"' . ( '' === $progress ? ' hidden' : '' ) . '>' . wp_kses_post( $progress ) . '</div>';
 		if ( ! SafeGrd_Settings::connected() ) {
@@ -124,9 +134,17 @@ final class SafeGrd_Admin {
 			<h2>Backups</h2>
 			<table class="form-table" role="presentation">
 				<tr><th scope="row">Last backup</th><td id="safegrd-last"><?php echo wp_kses_post( self::describe_run( $run ) ); ?></td></tr>
-				<tr><th scope="row">Next backup</th><td><?php echo esc_html( $next ? wp_date( 'Y-m-d H:i', $next ) . ' (daily)' : 'Not scheduled' ); ?></td></tr>
+				<tr><th scope="row">Next backup</th><td>
+					<span id="safegrd-next"><?php echo esc_html( $next ? wp_date( 'Y-m-d H:i', $next ) : 'Not scheduled' ); ?></span>
+					<label for="safegrd-frequency" class="screen-reader-text">How often</label>
+					<select id="safegrd-frequency">
+						<?php foreach ( array( 'daily' => 'Daily', 'weekly' => 'Weekly' ) as $value => $label ) : ?>
+							<option value="<?php echo esc_attr( $value ); ?>" <?php selected( SafeGrd_Scheduler::frequency(), $value ); ?>><?php echo esc_html( $label ); ?></option>
+						<?php endforeach; ?>
+					</select>
+				</td></tr>
 				<tr><th scope="row">Last test restore</th><td id="safegrd-drill">Asking SafeGrd...</td></tr>
-				<tr><th scope="row">Storage</th><td>SafeGrd hosted storage, locked against deletion</td></tr>
+				<tr><th scope="row">Storage</th><td>SafeGrd hosted storage, locked against deletion.<br><span id="safegrd-storage">Asking SafeGrd...</span></td></tr>
 				<tr><th scope="row">Key</th><td>
 					<?php if ( 'safegrd' === $custody ) : ?>
 						<strong>SafeGrd-managed key.</strong> SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
@@ -336,6 +354,40 @@ final class SafeGrd_Admin {
 		wp_send_json_success( $p );
 	}
 
+	/**
+	 * One slice of the backup or restore under way, run by the Tools page
+	 * where the site cannot reach itself to run it.
+	 */
+	public static function ajax_tick() {
+		self::guard();
+		if ( SafeGrd_Restore::job() ) {
+			$job        = new SafeGrd_Restore();
+			$job->chain = false;
+			$run        = $job->run();
+		} else {
+			$job        = new SafeGrd_Backup();
+			$job->chain = false;
+			$run        = $job->run( false );
+		}
+		wp_send_json_success( array( 'status' => $run['status'] ?? '' ) );
+	}
+
+	public static function ajax_set_frequency() {
+		self::guard();
+		$f = isset( $_POST['frequency'] ) ? sanitize_key( wp_unslash( $_POST['frequency'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		if ( ! SafeGrd_Scheduler::set_frequency( $f ) ) {
+			wp_send_json_error( array( 'message' => 'Choose daily or weekly.' ) );
+		}
+		SafeGrd_Backup::report_schedule();
+		$next = SafeGrd_Scheduler::next_run();
+		wp_send_json_success(
+			array(
+				'next'    => wp_date( 'Y-m-d H:i', $next ),
+				'message' => sprintf( 'Backs up %s from now on. The next is due %s.', $f, wp_date( 'Y-m-d H:i', $next ) ),
+			)
+		);
+	}
+
 	public static function ajax_backup_now() {
 		self::guard();
 		if ( ! SafeGrd_Scheduler::backup_now() ) {
@@ -374,6 +426,13 @@ final class SafeGrd_Admin {
 				}
 			} else {
 				$out['snapshots_error'] = $snaps->get_error_message();
+			}
+			$storage = SafeGrd_Backup::storage_usage();
+			if ( is_wp_error( $storage ) ) {
+				$out['storage'] = 'SafeGrd did not answer: ' . $storage->get_error_message();
+			} else {
+				$out['storage']         = $storage['line'];
+				$out['storage_warning'] = $storage['warning'];
 			}
 			$drills = $client->call( 'GET', '/api/v1/verifications?node_id=' . $node . '&limit=1', null, 15 );
 			if ( ! is_wp_error( $drills ) ) {

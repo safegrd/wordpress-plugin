@@ -922,6 +922,7 @@ final class SafeGrd_Restore {
 
 		wp_cache_flush();
 		delete_option( 'rewrite_rules' );
+		SafeGrd_Scheduler::reschedule_after_restore();
 		$last = array(
 			'snapshot_id' => $this->job['snapshot_id'],
 			'source_url'  => $this->job['source_url'],

@@ -98,7 +98,10 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 
 == Screenshots ==
 
-1. Tools, SafeGrd after the first backups: the last backup with its tables, rows, files and lock date, the next backup, the last test restore, the storage, the key, and the recent backups.
+1. Tools, SafeGrd once connected: the last backup with its tables, rows, files and lock date, the next backup, the last test restore, where the backups are and who keeps the key, and the recent backups.
+2. Restore: every WordPress backup in the account, with what each holds, and the copy kept aside from the last restore until you delete it.
+3. Connecting: choose who keeps the encryption key, then press Connect.
+4. Approving the sign-in in the tab that opens, with the code to check. The page finishes connecting on its own.
 
 == Changelog ==
 

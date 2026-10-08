@@ -237,6 +237,25 @@ final class SafeGrd_CLI {
 	}
 
 	/**
+	 * Sets how often this site backs up.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <frequency>
+	 * : daily or weekly.
+	 *
+	 * @when after_wp_load
+	 */
+	public function schedule( $args, $assoc ) {
+		if ( ! SafeGrd_Scheduler::set_frequency( $args[0] ) ) {
+			WP_CLI::error( sprintf( '%s is not a schedule the plugin runs. Use daily or weekly.', $args[0] ) );
+		}
+		SafeGrd_Backup::report_schedule();
+		$next = SafeGrd_Scheduler::next_run();
+		WP_CLI::line( sprintf( 'Backs up %s. Next: %s UTC', $args[0], gmdate( 'Y-m-d H:i', $next ) ) );
+	}
+
+	/**
 	 * Shows the connection and the last backup.
 	 *
 	 * @when after_wp_load
@@ -249,8 +268,21 @@ final class SafeGrd_CLI {
 		WP_CLI::line( 'Server:   ' . SafeGrd_Settings::server_url() );
 		WP_CLI::line( 'Node:     ' . SafeGrd_Settings::get( 'node_id' ) );
 		WP_CLI::line( 'Custody:  ' . ( 'safegrd' === SafeGrd_Settings::get( 'key_custody' ) ? 'SafeGrd-managed key' : 'customer-managed key' ) );
+		$loopback = SafeGrd_Scheduler::loopback_problem( true );
+		if ( '' !== $loopback ) {
+			WP_CLI::warning( $loopback . ' ' . SafeGrd_Scheduler::loopback_remedy() );
+		}
+		$storage = SafeGrd_Backup::storage_usage();
+		if ( is_wp_error( $storage ) ) {
+			WP_CLI::warning( 'SafeGrd did not say how much hosted storage is held: ' . $storage->get_error_message() );
+		} else {
+			WP_CLI::line( 'Storage:  ' . $storage['line'] );
+			if ( '' !== $storage['warning'] ) {
+				WP_CLI::warning( $storage['warning'] );
+			}
+		}
 		$next = SafeGrd_Scheduler::next_run();
-		WP_CLI::line( 'Next:     ' . ( $next ? gmdate( 'Y-m-d H:i', $next ) . ' UTC' : 'not scheduled' ) );
+		WP_CLI::line( 'Next:     ' . ( $next ? gmdate( 'Y-m-d H:i', $next ) . ' UTC (' . SafeGrd_Scheduler::frequency() . ')' : 'not scheduled' ) );
 		$run = SafeGrd_Settings::last_run();
 		if ( ! $run ) {
 			WP_CLI::line( 'Last:     none yet' );

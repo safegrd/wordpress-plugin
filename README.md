@@ -53,8 +53,9 @@ backup of each month uploads everything once.
 | `manifest.json` | Table row counts, site URL, WordPress and PHP versions, table prefix |
 
 WordPress core is not in the snapshot: reinstall the version the backup names. The plugin's own
-settings and its record of what is stored are left out, so a restored site comes back
-disconnected.
+settings and its record of what is stored are left out: a restore keeps the connection of the
+site it runs on, and a restore with the CLI onto a server without the plugin needs the plugin
+installed and connected afterwards.
 
 Refused: multisite networks, and sites whose media a plugin keeps in object storage.
 

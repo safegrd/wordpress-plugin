@@ -128,6 +128,28 @@
 		box.appendChild(table);
 	}
 
+	// Hosted storage held against the plan, and the server's warning in
+	// its own words: refused, billed or in grace, from 80% of the plan.
+	function showStorage(line, warning) {
+		var el = document.getElementById("safegrd-storage");
+		if (!el || !line) return;
+		el.textContent = line + ".";
+		if (warning) {
+			var w = document.createElement("strong");
+			w.className = "safegrd-warn";
+			w.textContent = " " + warning;
+			el.appendChild(w);
+		}
+	}
+
+	// Where the site cannot reach itself, no loopback or WP-Cron runs the
+	// next slice, so this page runs it while it is open. The server's lock
+	// keeps it to one slice at a time.
+	function drive() {
+		if (cfg.loopback) return Promise.resolve();
+		return post("safegrd_tick", {}).catch(function () {});
+	}
+
 	var backupBtn = document.getElementById("safegrd-backup-btn");
 	var watching = false;
 
@@ -137,6 +159,7 @@
 			backupBtn.disabled = !!s.running;
 			if (!local) {
 				if (s.drill) document.getElementById("safegrd-drill").textContent = s.drill;
+				showStorage(s.storage, s.storage_warning);
 				renderSnapshots(s.snapshots, s.snapshots_error);
 			}
 			return s;
@@ -147,7 +170,7 @@
 		if (watching) return;
 		watching = true;
 		var tick = function () {
-			refresh(true).then(function (s) {
+			drive().then(function () { return refresh(true); }).then(function (s) {
 				if (s.running) {
 					setTimeout(tick, 4000);
 					return;
@@ -169,6 +192,17 @@
 			notice("error", e.message);
 		});
 	});
+
+	var frequency = document.getElementById("safegrd-frequency");
+	if (frequency) {
+		frequency.addEventListener("change", function () {
+			frequency.disabled = true;
+			post("safegrd_set_frequency", { frequency: frequency.value }).then(function (r) {
+				document.getElementById("safegrd-next").textContent = r.next;
+				notice("success", r.message);
+			}).catch(function (e) { notice("error", e.message); }).then(function () { frequency.disabled = false; });
+		});
+	}
 
 	var disconnect = document.getElementById("safegrd-disconnect");
 	if (disconnect) {
@@ -247,7 +281,7 @@
 
 	function watchRestore(delay) {
 		var tick = function () {
-			post("safegrd_status", { local: "1" }).then(function (s) {
+			drive().then(function () { return post("safegrd_status", { local: "1" }); }).then(function (s) {
 				showProgress(s.progress);
 				setRestoring(!!s.restoring);
 				document.getElementById("safegrd-restore-state").innerHTML = s.restore;

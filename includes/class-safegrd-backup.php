@@ -222,6 +222,11 @@ final class SafeGrd_Backup {
 			'storage_uri' => $view['storage_uri'] ?? '',
 			'worm_mode'   => $info['worm_mode'] ?? '',
 			'retain'      => min( $now + $days * DAY_IN_SECONDS, $lock ),
+			// What Object Lock holds the run's objects to: its epoch's lock
+			// for this class, which outlasts the plan's retention. This is
+			// the date to show, as the server records it; retain is when the
+			// snapshot itself expires.
+			'locked'      => $lock,
 			'started'     => $now,
 			'stage'       => 'database',
 			'cursor'      => null,
@@ -871,7 +876,7 @@ final class SafeGrd_Backup {
 				'encrypted_sha256'     => '',
 				'storage_uri'          => $job['storage_uri'],
 				'worm_mode'            => $job['worm_mode'],
-				'worm_retention_until' => SafeGrd_Repo_Format::rfc3339( $job['retain'] ),
+				'worm_retention_until' => SafeGrd_Repo_Format::rfc3339( $job['locked'] ?? $job['retain'] ),
 				'duration_ms'          => ( $now - $job['started'] ) * 1000,
 				'format'               => 'repo-v1',
 				'epoch_id'             => $job['epoch_id'],
@@ -912,7 +917,7 @@ final class SafeGrd_Backup {
 			'tables'      => count( $table_stats ),
 			'rows'        => $rows_total,
 			'files'       => $job['files'],
-			'retain'      => SafeGrd_Repo_Format::rfc3339( $job['retain'] ),
+			'retain'      => SafeGrd_Repo_Format::rfc3339( $job['locked'] ?? $job['retain'] ),
 			'class'       => $job['class'],
 			'skipped'     => $job['skipped'],
 			'message'     => $message,
@@ -1039,7 +1044,19 @@ final class SafeGrd_Backup {
 		);
 	}
 
+	/**
+	 * Tells the server the schedule now, so the console measures overdue
+	 * against it before the next backup reports it.
+	 */
+	public static function report_schedule() {
+		$last = SafeGrd_Settings::last_run();
+		( new self() )->heartbeat( 'completed' === ( $last['status'] ?? '' ) ? (string) $last['snapshot_id'] : '', '' );
+	}
+
 	private function heartbeat( $snapshot_id, $error ) {
+		if ( ! $this->client ) {
+			$this->client = SafeGrd_Client::for_site();
+		}
 		$body = array(
 			'node_id'       => SafeGrd_Settings::get( 'node_id' ),
 			'cli_version'   => 'wordpress-plugin ' . SAFEGRD_VERSION,
@@ -1048,7 +1065,7 @@ final class SafeGrd_Backup {
 			'postgres_up'   => '' === $error,
 			'storage_up'    => '' === $error,
 			'last_snapshot' => $snapshot_id,
-			'schedule'      => SafeGrd_Scheduler::SCHEDULE,
+			'schedule'      => SafeGrd_Scheduler::schedule_expr(),
 		);
 		if ( '' !== $error ) {
 			$body['last_error'] = $error;
@@ -1063,6 +1080,32 @@ final class SafeGrd_Backup {
 		if ( $this->say && null !== $line ) {
 			call_user_func( $this->say, $line );
 		}
+	}
+
+	// --- hosted storage -------------------------------------------------------
+
+	/**
+	 * Hosted storage held against the plan's included amount, as SafeGrd
+	 * counts it for the whole organization, and the server's warning when it
+	 * gave one (from 80%, in the plan's own terms: refused, billed or in
+	 * grace). The plugin knows no quota of its own.
+	 *
+	 * @return array{line:string,warning:string}|WP_Error
+	 */
+	public static function storage_usage() {
+		$info = SafeGrd_Client::for_site()->call( 'GET', '/api/v1/nodes/' . rawurlencode( SafeGrd_Settings::get( 'node_id' ) ) . '/hosted', null, 15 );
+		if ( is_wp_error( $info ) ) {
+			return $info;
+		}
+		$used  = (int) ( $info['used_bytes'] ?? 0 );
+		$quota = (int) ( $info['quota_bytes'] ?? 0 );
+		$line  = $quota > 0
+			? sprintf( '%s of the %s your plan includes, %d%%, across every surface in the account', size_format( $used, 1 ), size_format( $quota, 0 ), (int) floor( $used * 100 / $quota ) )
+			: sprintf( '%s held, across every surface in the account', size_format( $used, 1 ) );
+		return array(
+			'line'    => $line,
+			'warning' => (string) ( $info['warning'] ?? '' ),
+		);
 	}
 
 	// --- the lock -----------------------------------------------------------

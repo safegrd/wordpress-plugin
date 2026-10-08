@@ -140,7 +140,7 @@ final class SafeGrd_Connect {
 			'storage_bucket'  => '',
 			'local_storage'   => 'hosted',
 			'public_key'      => $keys['recipient'],
-			'schedule'        => SafeGrd_Scheduler::SCHEDULE,
+			'schedule'        => SafeGrd_Scheduler::schedule_expr(),
 			'retention_days'  => 0,
 			'os'              => 'wordpress',
 			'arch'            => 'php-' . PHP_VERSION,

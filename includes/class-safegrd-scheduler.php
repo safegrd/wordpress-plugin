@@ -1,6 +1,6 @@
 <?php
 /**
- * When backups run: once a day through WP-Cron, and on demand.
+ * When backups run: once a day or once a week through WP-Cron, and on demand.
  *
  * WP-Cron runs its events in a request of their own (a loopback to
  * wp-cron.php, or the server's cron when DISABLE_WP_CRON is set), so a
@@ -16,29 +16,81 @@ final class SafeGrd_Scheduler {
 	const NOW_HOOK = 'safegrd_backup_now';
 	/** The next slice of a backup under way. */
 	const CONTINUE_HOOK = 'safegrd_continue';
-	/** The schedule the server is told this site runs. */
-	const SCHEDULE = '@daily';
+	/** How often backups may run, and the schedule the server is told for each. */
+	const FREQUENCIES = array(
+		'daily'  => '@daily',
+		'weekly' => '@weekly',
+	);
 
 	const SLICE_ACTION = 'safegrd_slice';
 	const SLICE_KEY    = 'safegrd_slice_key';
+	const PING_ACTION  = 'safegrd_ping';
+	/** The last loopback check: '' when the site reached itself, else why not. */
+	const LOOPBACK = 'safegrd_loopback';
 
 	public static function init() {
 		add_action( 'wp_ajax_nopriv_' . self::SLICE_ACTION, array( __CLASS__, 'slice_request' ) );
 		add_action( 'wp_ajax_' . self::SLICE_ACTION, array( __CLASS__, 'slice_request' ) );
+		add_action( 'wp_ajax_nopriv_' . self::PING_ACTION, array( __CLASS__, 'ping' ) );
+		add_action( 'wp_ajax_' . self::PING_ACTION, array( __CLASS__, 'ping' ) );
 		add_action( self::HOOK, array( __CLASS__, 'run' ) );
 		add_action( self::NOW_HOOK, array( __CLASS__, 'run_requested' ) );
 		add_action( self::CONTINUE_HOOK, array( __CLASS__, 'run_requested' ) );
 	}
 
+	/** How often this site backs up: daily (the default) or weekly. */
+	public static function frequency() {
+		$f = SafeGrd_Settings::get( 'frequency', 'daily' );
+		return isset( self::FREQUENCIES[ $f ] ) ? $f : 'daily';
+	}
+
+	/** The schedule the server is told, as the console reads it. */
+	public static function schedule_expr() {
+		return self::FREQUENCIES[ self::frequency() ];
+	}
+
+	private static function interval() {
+		return 'weekly' === self::frequency() ? WEEK_IN_SECONDS : DAY_IN_SECONDS;
+	}
+
 	/**
-	 * Schedules the daily backup, due at once: WP-Cron runs due events on the
+	 * Schedules the backup, due at once: WP-Cron runs due events on the
 	 * next request to the site, which after connecting from wp-admin is the
 	 * Tools page reloading.
 	 */
 	public static function schedule() {
 		if ( ! wp_next_scheduled( self::HOOK ) ) {
-			wp_schedule_event( time(), 'daily', self::HOOK );
+			wp_schedule_event( time(), self::frequency(), self::HOOK );
 		}
+	}
+
+	/**
+	 * Sets how often backups run. The next is due one new interval after
+	 * the last backup, or at once when that has passed.
+	 *
+	 * @return bool False for a frequency the plugin does not offer.
+	 */
+	public static function set_frequency( $frequency ) {
+		if ( ! isset( self::FREQUENCIES[ $frequency ] ) ) {
+			return false;
+		}
+		SafeGrd_Settings::update( array( 'frequency' => $frequency ) );
+		$last = SafeGrd_Settings::last_run();
+		$at   = empty( $last['started_at'] ) ? time() : strtotime( $last['started_at'] ) + self::interval();
+		wp_clear_scheduled_hook( self::HOOK );
+		wp_schedule_event( max( time(), (int) $at ), $frequency, self::HOOK );
+		return true;
+	}
+
+	/**
+	 * After a restore: the site's WP-Cron is the backup's, whose backup was
+	 * already due, and whose schedule may not be this site's. The next
+	 * backup is one interval out, on this site's frequency.
+	 */
+	public static function reschedule_after_restore() {
+		wp_clear_scheduled_hook( self::HOOK );
+		wp_clear_scheduled_hook( self::NOW_HOOK );
+		wp_schedule_event( time() + self::interval(), self::frequency(), self::HOOK );
 	}
 
 	public static function unschedule() {
@@ -101,6 +153,53 @@ final class SafeGrd_Scheduler {
 
 	public static function continue_cancel() {
 		wp_unschedule_hook( self::CONTINUE_HOOK );
+	}
+
+	/** The loopback check's answer. */
+	public static function ping() {
+		wp_die( 'safegrd-ok', '', array( 'response' => 200 ) );
+	}
+
+	/**
+	 * Why this site cannot reach itself, or '' when it can. WP-Cron and the
+	 * backup's slices both start with a request from the site to itself,
+	 * so on a host that blocks it no scheduled backup runs. Checked with
+	 * one request and remembered for 12 hours, or 10 minutes after a
+	 * failure.
+	 *
+	 * @param bool $fresh Check again instead of using the last answer.
+	 */
+	public static function loopback_problem( $fresh = false ) {
+		$cached = get_transient( self::LOOPBACK );
+		if ( ! $fresh && false !== $cached ) {
+			return (string) $cached;
+		}
+		$url  = admin_url( 'admin-ajax.php' );
+		$resp = wp_remote_post(
+			$url,
+			array(
+				'timeout'   => 10,
+				'body'      => array( 'action' => self::PING_ACTION ),
+				'sslverify' => apply_filters( 'https_local_ssl_verify', false ), // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- WordPress core's filter for loopback requests.
+			)
+		);
+		if ( is_wp_error( $resp ) ) {
+			$problem = sprintf( 'This site cannot reach itself at %s: %s', $url, $resp->get_error_message() );
+		} elseif ( 'safegrd-ok' !== trim( wp_remote_retrieve_body( $resp ) ) ) {
+			$problem = sprintf( 'This site reached %s but got HTTP %d instead of the plugin\'s answer. A security plugin, firewall or host rule may block requests to admin-ajax.php.', $url, (int) wp_remote_retrieve_response_code( $resp ) );
+		} else {
+			$problem = '';
+		}
+		set_transient( self::LOOPBACK, $problem, '' === $problem ? 12 * HOUR_IN_SECONDS : 10 * MINUTE_IN_SECONDS );
+		return $problem;
+	}
+
+	/** What to do about a site that cannot reach itself. */
+	public static function loopback_remedy() {
+		return sprintf(
+			'Scheduled backups do not run until it can. Run WP-Cron from the server\'s cron instead (*/15 * * * * cd %s && wp cron event run --due-now), or add define( \'ALTERNATE_WP_CRON\', true ); to wp-config.php. While this page is open, it runs a backup or restore itself.',
+			untrailingslashit( ABSPATH )
+		);
 	}
 
 	/**
