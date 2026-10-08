@@ -1,6 +1,6 @@
-=== SafeGrd Backup ===
+=== SafeGrd Backup: Encrypted WordPress Backups, Test-Restored ===
 Contributors: safegrd
-Tags: backup, restore, database backup, encryption, immutable
+Tags: backup, wordpress backup, database backup, restore, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
@@ -8,20 +8,44 @@ Stable tag: 0.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Backs up the database and files, encrypted on your server, to locked storage, and test-restores them on a schedule.
+Backs up the database and files, encrypted on your server, to storage locked against deletion, and test-restores them on a schedule.
 
 == Description ==
 
-SafeGrd Backup backs up the site (its database, wp-config.php, .htaccess and wp-content) to SafeGrd's hosted storage, encrypted on this server and locked against deletion. Each backup is a complete snapshot, and uploads only what changed since the last: an unchanged image, theme or table costs nothing. SafeGrd then test-restores the newest backup on a schedule: it checks the archive decrypts, every table has its rows, every file matches its digest, and every attachment the database names is in the archive.
+SafeGrd Backup backs up a WordPress site, its database, wp-config.php, .htaccess and wp-content, to SafeGrd's hosted storage. Each backup is encrypted on your server before it leaves, and the storage refuses to delete it before its date, whoever asks. SafeGrd then restores the newest backup on a schedule and checks what came back, so a backup that would not restore is found before you need it.
 
 The free plan covers one site. What each plan includes is at https://safegrd.dev/pricing.
 
-The backup is encrypted with age on this server before it is uploaded. Choose who keeps the key:
+= What is in a backup =
 
-* SafeGrd-managed key: SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
-* Customer-managed key: only you can decrypt these backups. Keep a copy of the key somewhere safe.
+* Every table with the site's table prefix, read in one consistent snapshot.
+* wp-config.php, .htaccess and wp-content: uploads, themes and plugins. Caches, the upgrade directory, debug.log and other backup plugins' archives are left out.
+* A manifest with the row count of every table, the site URL, and the WordPress and PHP versions.
 
-The plugin is written in PHP and needs nothing else installed. A backup runs in slices of a few seconds, so a host that stops long requests does not stop it.
+Each backup is a complete snapshot, stored incrementally: a run uploads only what changed since the last, so an unchanged image, theme or table costs nothing. The first backup of each month uploads everything once.
+
+= The test restore =
+
+On your plan's schedule SafeGrd decrypts the newest backup on its own machines and checks that the archive opens with the key, that the database dump is complete with every table's rows, that every file matches the digest recorded beside it, and that every attachment the database names is in the archive. Tools, SafeGrd shows the result; a failed check is reported to you.
+
+= Who keeps the key =
+
+The backup is encrypted with age on your server. Choose who keeps the key when you connect:
+
+* SafeGrd-managed key (the default): SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site. SafeGrd's test restores use it.
+* Customer-managed key: only you can decrypt these backups. The key is shown once, when the site connects. Keep a copy somewhere safe, such as a password manager. The site stores only its public half.
+
+= Restore =
+
+From Tools, SafeGrd, on this site or on a fresh WordPress install connected to the same account. The site keeps running on its own database and files until every table and file is loaded and checked against the backup; then one step swaps them in, and what they replaced is kept until you delete it. A different site address is replaced in the database, serialized values included. The same works from WP-CLI with wp safegrd restore.
+
+= Hosts that stop long requests =
+
+A backup runs in slices of a few seconds, each its own request, so shared and managed hosting that stops long requests does not stop the backup. The plugin is PHP only and needs nothing installed beside WordPress: PHP 7.4 or newer with the sodium, zlib and mysqli extensions, which PHP includes.
+
+= WP-CLI =
+
+wp safegrd connect, backup, status, snapshots and restore do the same as Tools, SafeGrd, for a host with a shell and for a cron job where PHP has no time limit.
 
 == External service ==
 
@@ -33,8 +57,10 @@ This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service. No
 == Installation ==
 
 1. Upload the zip under Plugins, Add New, Upload Plugin, and activate it.
-2. Open Tools, SafeGrd, and press Connect.
-3. Sign in or create an account in the tab that opens.
+2. Open Tools, SafeGrd, choose who keeps the key, and press Connect.
+3. Sign in or create an account in the tab that opens, and check the code matches the one in wp-admin.
+
+The first backup starts right after connecting, then runs once a day.
 
 == Frequently Asked Questions ==
 
@@ -42,9 +68,37 @@ This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service. No
 
 From Tools, SafeGrd, Restore, on this site or a new one connected to the same account. The site runs as it is until the restored database and files are loaded and checked, and what they replace is kept aside until you delete it. Details: https://safegrd.dev/docs/surfaces/wordpress#restore
 
+= Can I move the site to a new host or domain with it? =
+
+Yes. Install WordPress and this plugin on the new host, connect to the same account, and restore the backup from Tools, SafeGrd. The new site keeps its own wp-config.php and address; the old address is replaced in the database.
+
+= Does it slow the site down? =
+
+A backup runs in slices of a few seconds and uploads only what changed since the last one. The site serves pages between slices as usual.
+
+= Where are the backups stored? =
+
+In SafeGrd's hosted storage, encrypted on your server first, and locked against deletion until each backup's date. Nobody can read them without the key, and nobody can delete them early.
+
+= Is WooCommerce backed up? =
+
+Every table that starts with the site's table prefix is in the backup, orders and customers included, read in one consistent snapshot.
+
+= Is WordPress core in the backup? =
+
+No. The backup records the version. Install WordPress at that version, then restore: the backed-up database and files go over it.
+
 = Does it back up multisite? =
 
 The plugin backs up single sites. On a multisite network it backs up nothing and says so on Tools, SafeGrd.
+
+= What does the free plan include? =
+
+One site, with scheduled backups and test restores. https://safegrd.dev/pricing has what each plan adds.
+
+== Screenshots ==
+
+1. Tools, SafeGrd after the first backups: the last backup with its tables, rows, files and lock date, the next backup, the last test restore, the storage, the key, and the recent backups.
 
 == Changelog ==
 

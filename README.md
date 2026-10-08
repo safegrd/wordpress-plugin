@@ -119,6 +119,10 @@ as failed with the reason. Run it from the server's cron instead, where PHP has 
 
 ## Development
 
+`.wordpress-org/` holds the wordpress.org listing: the banner (`banner.svg` is the source,
+rendered with `rsvg-convert`), the icon (SafeGrd's brand mark) and the screenshots, numbered as the `== Screenshots ==` lines in
+`readme.txt`. They are not in the zip; they go to the SVN `assets/` directory beside `trunk`.
+
 `git config core.hooksPath .githooks` once per clone. The end-to-end test lives with the server's
 test suite and runs this plugin on the official WordPress image against a real server.
 
