@@ -1,10 +1,10 @@
 === SafeGrd Backup ===
 Contributors: safegrd
 Tags: backup, restore, database backup, encryption, immutable
-Requires at least: 5.9
-Tested up to: 6.8
+Requires at least: 6.2
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -25,7 +25,10 @@ The plugin is written in PHP and needs nothing else installed. A backup runs in 
 
 == External service ==
 
-This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service, once you connect the site. It sends the encrypted backups to storage SafeGrd operates, and to safegrd.dev: the site's name and URL, the database name, table row counts, file counts and the time and size of each backup. Terms: https://safegrd.dev/terms. Privacy: https://safegrd.dev/privacy.
+This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service. Nothing is sent until you connect the site on Tools, SafeGrd, or with wp safegrd connect.
+
+* safegrd.dev receives the site's name and URL, the database name, the WordPress and PHP versions, table row counts, file counts, and the time and size of each backup. It holds the site's key sealed when you choose a SafeGrd-managed key. Terms: https://safegrd.dev/terms. Privacy: https://safegrd.dev/privacy.
+* The encrypted backups are uploaded from this server straight to SafeGrd's storage bucket at Backblaze B2 (s3.us-east-005.backblazeb2.com), through URLs safegrd.dev signs for each upload. A restore downloads them the same way. Backblaze terms: https://www.backblaze.com/company/policy/terms-of-service. Privacy: https://www.backblaze.com/company/policy/privacy. SafeGrd's sub-processors are listed at https://safegrd.dev/subprocessors.
 
 == Installation ==
 
@@ -44,6 +47,12 @@ From Tools, SafeGrd, Restore, on this site or a new one connected to the same ac
 The plugin backs up single sites. On a multisite network it backs up nothing and says so on Tools, SafeGrd.
 
 == Changelog ==
+
+= 0.1.1 =
+* A restore's progress shows at the top of Tools, SafeGrd, and survives a reload.
+* A file the restore cannot move into place stops the restore and says which.
+* Deleting the plugin removes the restore's settings and tables too.
+* Requires WordPress 6.2 or newer. Tested up to 7.1.
 
 = 0.1.0 =
 * First release.

@@ -76,7 +76,7 @@ final class SafeGrd_Scheduler {
 					'action' => self::SLICE_ACTION,
 					'key'    => $key,
 				),
-				'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
+				'sslverify' => apply_filters( 'https_local_ssl_verify', false ), // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- WordPress core's filter for loopback requests.
 			)
 		);
 	}

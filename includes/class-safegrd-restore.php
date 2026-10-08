@@ -36,6 +36,14 @@ final class SafeGrd_Restore {
 	/** @var mysqli|null */
 	private $db;
 
+	/**
+	 * Whether a slice that leaves work starts the next in a request of its
+	 * own. WP-CLI runs its slices one after another itself.
+	 *
+	 * @var bool
+	 */
+	public $chain = true;
+
 	public function __construct( $say = null, $budget = null ) {
 		$this->say    = $say;
 		$this->budget = null === $budget ? (float) SafeGrd_Backup::default_budget() : (float) $budget;
@@ -85,14 +93,14 @@ final class SafeGrd_Restore {
   PRIMARY KEY  (id)
 ) $charset;"
 		);
-		$wpdb->query( 'TRUNCATE TABLE ' . self::files_table() ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		$wpdb->query( 'TRUNCATE TABLE ' . self::index_table() ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->query( $wpdb->prepare( 'TRUNCATE TABLE %i', self::files_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
+		$wpdb->query( $wpdb->prepare( 'TRUNCATE TABLE %i', self::index_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
 	}
 
 	private static function drop_tables() {
 		global $wpdb;
-		$wpdb->query( 'DROP TABLE IF EXISTS ' . self::files_table() ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		$wpdb->query( 'DROP TABLE IF EXISTS ' . self::index_table() ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', self::files_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
+		$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', self::index_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
 	}
 
 	// --- starting -----------------------------------------------------------
@@ -150,8 +158,7 @@ final class SafeGrd_Restore {
 	 * @return array status running, restored, failed or busy, with the job's progress.
 	 */
 	public function run() {
-		$this->job = self::job();
-		if ( ! $this->job ) {
+		if ( ! self::job() ) {
 			return array( 'status' => 'idle' );
 		}
 		if ( ! SafeGrd_Backup::take_lock( $this->budget ) ) {
@@ -161,9 +168,15 @@ final class SafeGrd_Restore {
 				'message' => 'A slice of this site\'s restore is running now.',
 			);
 		}
+		// Read again under the lock: the last slice may have run in another
+		// request and moved the job on.
+		$this->job = self::job();
+		if ( ! $this->job ) {
+			SafeGrd_Backup::release_lock();
+			return array( 'status' => 'idle' );
+		}
 		if ( function_exists( 'set_time_limit' ) ) {
-			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- some hosts disable it; the slice budget still holds.
-			@set_time_limit( 0.0 === $this->budget ? 0 : (int) ceil( $this->budget * 3 + 60 ) );
+			@set_time_limit( 0.0 === $this->budget ? 0 : (int) ceil( $this->budget * 3 + 60 ) ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged, WordPress.PHP.NoSilencedErrors.Discouraged -- each slice sets its own limit; some hosts disable the function, and the slice budget still holds.
 		}
 		ignore_user_abort( true );
 		wp_raise_memory_limit( 'admin' );
@@ -182,13 +195,13 @@ final class SafeGrd_Restore {
 			SafeGrd_Scheduler::continue_cancel();
 			return $this->progress( 'restored' );
 		} catch ( Throwable $e ) {
-			return $this->failed( $e->getMessage() );
+			return $this->failed( SafeGrd_Exception::text( $e ) );
 		} finally {
 			if ( $this->db ) {
 				$this->db->close();
 			}
 			SafeGrd_Backup::release_lock();
-			if ( $next ) {
+			if ( $next && $this->chain ) {
 				SafeGrd_Scheduler::continue_now();
 			}
 		}
@@ -254,12 +267,12 @@ final class SafeGrd_Restore {
 		if ( is_wp_error( $r ) ) {
 			$status = (int) ( $r->get_error_data()['status'] ?? 0 );
 			if ( 404 === $status ) {
-				throw new SafeGrd_Exception( 'SafeGrd does not hold the key of this backup: it was taken with a customer-managed key. Restore it with the safegrd command line tool and that key file.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'SafeGrd does not hold the key of this backup: it was taken with a customer-managed key. Restore it with the safegrd command line tool and that key file.' ), 'other' );
 			}
-			throw new SafeGrd_Exception( 'SafeGrd did not release the key of this backup: ' . $r->get_error_message(), 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'SafeGrd did not release the key of this backup: ' . $r->get_error_message() ), 'storage' );
 		}
 		if ( empty( $r['identities'][0]['identity'] ) ) {
-			throw new SafeGrd_Exception( 'SafeGrd released no key for this backup.', 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'SafeGrd released no key for this backup.' ), 'storage' );
 		}
 		return $r['identities'][0]['identity'];
 	}
@@ -271,7 +284,7 @@ final class SafeGrd_Restore {
 		$this->reader = new SafeGrd_Repo_Reader( $this->client, SafeGrd_Settings::get( 'node_id' ), $this->job['prefix'], $this->identity() );
 		global $wpdb;
 		$index = array();
-		foreach ( $wpdb->get_results( 'SELECT id,pack,offset,length,raw_length,type FROM ' . self::index_table(), ARRAY_N ) as $r ) { // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		foreach ( $wpdb->get_results( $wpdb->prepare( 'SELECT id,pack,offset,length,raw_length,type FROM %i', self::index_table() ), ARRAY_N ) as $r ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 			$index[ $r[0] ] = array( $r[1], (int) $r[2], (int) $r[3], (int) $r[4], (int) $r[5] );
 		}
 		$this->reader->set_index( $index );
@@ -286,18 +299,18 @@ final class SafeGrd_Restore {
 		$this->say( 'Reading snapshot ' . $this->job['snapshot_id'] );
 		$rec = $this->client->call( 'GET', '/api/v1/snapshots/' . rawurlencode( $this->job['snapshot_id'] ), null, 30 );
 		if ( is_wp_error( $rec ) ) {
-			throw new SafeGrd_Exception( 'SafeGrd has no record of ' . $this->job['snapshot_id'] . ': ' . $rec->get_error_message(), 'other' );
+			throw new SafeGrd_Exception( esc_html( 'SafeGrd has no record of ' . $this->job['snapshot_id'] . ': ' . $rec->get_error_message() ), 'other' );
 		}
 		$rec = isset( $rec['snapshot'] ) ? $rec['snapshot'] : $rec;
 		if ( 'wordpress' !== ( $rec['surface_type'] ?? '' ) || 'repo-v1' !== ( $rec['format'] ?? '' ) || empty( $rec['epoch_id'] ) ) {
-			throw new SafeGrd_Exception( $this->job['snapshot_id'] . ' is not a WordPress backup this plugin restores.', 'other' );
+			throw new SafeGrd_Exception( esc_html( $this->job['snapshot_id'] . ' is not a WordPress backup this plugin restores.' ), 'other' );
 		}
 		if ( ! in_array( $rec['status'] ?? '', array( 'completed', 'verified' ), true ) ) {
-			throw new SafeGrd_Exception( $this->job['snapshot_id'] . ' did not complete, so there is nothing to restore.', 'other' );
+			throw new SafeGrd_Exception( esc_html( $this->job['snapshot_id'] . ' did not complete, so there is nothing to restore.' ), 'other' );
 		}
 		$epochs = $this->client->call( 'GET', '/api/v1/nodes/' . rawurlencode( SafeGrd_Settings::get( 'node_id' ) ) . '/hosted/repo/epochs?' . http_build_query( array( 'node_id' => $rec['node_id'], 'surface_id' => SafeGrd_Backup::SURFACE_ID ) ), null, 30 );
 		if ( is_wp_error( $epochs ) ) {
-			throw new SafeGrd_Exception( 'Hosted storage: ' . $epochs->get_error_message(), 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $epochs->get_error_message() ), 'storage' );
 		}
 		$prefix = '';
 		foreach ( (array) ( $epochs['epochs'] ?? array() ) as $e ) {
@@ -306,13 +319,13 @@ final class SafeGrd_Restore {
 			}
 		}
 		if ( '' === $prefix ) {
-			throw new SafeGrd_Exception( 'Hosted storage no longer holds the month this backup is in. It has expired.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage no longer holds the month this backup is in. It has expired.' ), 'other' );
 		}
 		$this->job['prefix'] = $prefix;
 		$this->reader        = new SafeGrd_Repo_Reader( $this->client, SafeGrd_Settings::get( 'node_id' ), $prefix, $this->identity() );
 		$snap                = $this->reader->object( 'snapshot', $this->job['snapshot_id'] );
 		if ( ( $snap['snapshot_id'] ?? '' ) !== $this->job['snapshot_id'] ) {
-			throw new SafeGrd_Exception( 'The snapshot object names another snapshot.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'The snapshot object names another snapshot.' ), 'other' );
 		}
 		$this->reader->load_index( $snap );
 		$entries = $this->reader->walk( $snap['root_tree'] );
@@ -323,7 +336,7 @@ final class SafeGrd_Restore {
 			$lines[ $path ] = 'dir' === $e['type'] ? array( 'd', '-' ) : array( 'f', $e['sha256'] );
 		}
 		if ( SafeGrd_Repo_Format::content_root( $lines ) !== ( $rec['sha256_checksum'] ?? '' ) ) {
-			throw new SafeGrd_Exception( 'The backup in storage does not match what SafeGrd recorded when it was taken. Nothing was restored.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'The backup in storage does not match what SafeGrd recorded when it was taken. Nothing was restored.' ), 'other' );
 		}
 
 		// The manifest, then every file in the order the restore writes them.
@@ -345,21 +358,21 @@ final class SafeGrd_Restore {
 			}
 		}
 		if ( ! $man || ! isset( $parts[0] ) ) {
-			throw new SafeGrd_Exception( 'This backup holds no manifest or no database dump.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'This backup holds no manifest or no database dump.' ), 'other' );
 		}
 		$manifest = json_decode( $this->read_file( $man ), true );
 		if ( ! is_array( $manifest ) || empty( $manifest['wordpress'] ) ) {
-			throw new SafeGrd_Exception( 'The backup\'s manifest does not parse.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'The backup\'s manifest does not parse.' ), 'other' );
 		}
 		ksort( $parts );
 		if ( array_keys( $parts ) !== range( 0, count( $parts ) - 1 ) ) {
-			throw new SafeGrd_Exception( 'A part of the backup\'s dump is missing.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'A part of the backup\'s dump is missing.' ), 'other' );
 		}
 
 		self::install_tables();
 		$seq = 0;
 		foreach ( array_merge( array_values( $parts ), $files ) as list( $path, $e ) ) {
-			$wpdb->insert(
+			$wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- the plugin's own table, which only this plugin reads and writes.
 				self::files_table(),
 				array(
 					'seq'     => $seq++,
@@ -378,7 +391,7 @@ final class SafeGrd_Restore {
 				$values[] = '(%s,%s,%d,%d,%d,%d)';
 				array_push( $args, $id, $loc[0], $loc[1], $loc[2], $loc[3], $loc[4] );
 			}
-			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO ' . self::index_table() . ' (id,pack,offset,length,raw_length,type) VALUES ' . implode( ',', $values ), $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO %i (id,pack,offset,length,raw_length,type) VALUES ' . implode( ',', $values ), array_merge( array( self::index_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
 		}
 
 		$wp                         = $manifest['wordpress'];
@@ -400,7 +413,7 @@ final class SafeGrd_Restore {
 		$this->drop_leftovers();
 		$staging = $this->content_dir() . '/' . $this->job['staging'];
 		if ( ! wp_mkdir_p( $staging ) ) {
-			throw new SafeGrd_Exception( 'Could not create ' . $staging . ' to stage the files: the content directory is not writable.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Could not create ' . $staging . ' to stage the files: the content directory is not writable.' ), 'other' );
 		}
 		$this->say( sprintf( 'Snapshot of %s, taken %s: %d tables, %d files', $wp['site_url'], $this->job['taken_at'], count( $manifest['table_stats'] ), count( $files ) ) );
 	}
@@ -446,14 +459,14 @@ final class SafeGrd_Restore {
 			$out .= $this->reader->blob( $id );
 		}
 		if ( hash( 'sha256', $out ) !== $e['sha256'] ) {
-			throw new SafeGrd_Exception( 'A file of the backup does not match its SHA-256.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'A file of the backup does not match its SHA-256.' ), 'other' );
 		}
 		return $out;
 	}
 
 	private function row( $seq ) {
 		global $wpdb;
-		return $wpdb->get_row( $wpdb->prepare( 'SELECT seq,path,size,sha256,content,mode FROM ' . self::files_table() . ' WHERE seq = %d', $seq ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return $wpdb->get_row( $wpdb->prepare( 'SELECT seq,path,size,sha256,content,mode FROM %i WHERE seq = %d', self::files_table(), $seq ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 	}
 
 	// --- database -----------------------------------------------------------
@@ -507,10 +520,10 @@ final class SafeGrd_Restore {
 				}
 			}
 			if ( '' !== trim( preg_replace( '/^--[^\n]*$/m', '', $buf ) ) ) {
-				throw new SafeGrd_Exception( 'The dump ends in the middle of a statement.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'The dump ends in the middle of a statement.' ), 'other' );
 			}
 			if ( $hash && hash_final( $hash ) !== $row['sha256'] ) {
-				throw new SafeGrd_Exception( 'A part of the dump does not match its SHA-256.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'A part of the dump does not match its SHA-256.' ), 'other' );
 			}
 			$this->job['part']++;
 			$this->job['offset'] = 0;
@@ -537,7 +550,7 @@ final class SafeGrd_Restore {
 			function ( $m ) use ( $from, $tmp ) {
 				$name = str_replace( '``', '`', $m[3] );
 				if ( 0 !== strpos( $name, $from ) ) {
-					throw new SafeGrd_Exception( 'The dump names a table outside the site\'s prefix: ' . $name, 'other' );
+					throw new SafeGrd_Exception( esc_html( 'The dump names a table outside the site\'s prefix: ' . $name ), 'other' );
 				}
 				return $m[1] . $m[2] . ' `' . str_replace( '`', '``', $tmp . substr( $name, strlen( $from ) ) ) . '`';
 			},
@@ -545,7 +558,7 @@ final class SafeGrd_Restore {
 			1
 		);
 		if ( false === $this->db()->query( $sql ) ) {
-			throw new SafeGrd_Exception( 'The database refused a statement of the dump: ' . $this->db()->error . ' (' . substr( $sql, 0, 120 ) . ')', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'The database refused a statement of the dump: ' . $this->db()->error . ' (' . substr( $sql, 0, 120 ) . ')' ), 'other' );
 		}
 	}
 
@@ -568,7 +581,7 @@ final class SafeGrd_Restore {
 				$r    = $db->query( 'SELECT COUNT(*) FROM `' . $name . '`' );
 				$got  = $r ? (int) $r->fetch_row()[0] : -1;
 				if ( $got !== (int) $t['row_count'] ) {
-					throw new SafeGrd_Exception( sprintf( '%s loaded %d rows; the backup recorded %d. Nothing was restored.', $t['table_name'], $got, $t['row_count'] ), 'other' );
+					throw new SafeGrd_Exception( esc_html( sprintf( '%s loaded %d rows; the backup recorded %d. Nothing was restored.', $t['table_name'], $got, $t['row_count'] ) ), 'other' );
 				}
 			}
 			$this->say( sprintf( 'Loaded %d tables, %d rows, each matching the backup', count( $this->job['manifest']['tables'] ), $this->job['manifest']['rows'] ) );
@@ -617,7 +630,7 @@ final class SafeGrd_Restore {
 		$from = strlen( $src ) + 1;
 		foreach ( array( "UPDATE `{$tmp}options` SET option_name = CONCAT('$to', SUBSTRING(option_name, $from)) WHERE option_name LIKE '$like'", "UPDATE `{$tmp}usermeta` SET meta_key = CONCAT('$to', SUBSTRING(meta_key, $from)) WHERE meta_key LIKE '$like'" ) as $sql ) {
 			if ( false === $db->query( $sql ) ) {
-				throw new SafeGrd_Exception( 'Renaming the prefixed rows failed: ' . $db->error, 'other' );
+				throw new SafeGrd_Exception( esc_html( 'Renaming the prefixed rows failed: ' . $db->error ), 'other' );
 			}
 		}
 	}
@@ -672,7 +685,7 @@ final class SafeGrd_Restore {
 				$after = null === $this->job['pk'] ? '' : " AND `$key` > '" . $db->real_escape_string( (string) $this->job['pk'] ) . "'";
 				$res   = $db->query( 'SELECT `' . $key . '`,`' . implode( '`,`', $cols ) . '` FROM `' . $name . "` WHERE ($where)$after ORDER BY `$key` LIMIT " . self::URL_BATCH );
 				if ( ! $res ) {
-					throw new SafeGrd_Exception( 'Reading ' . $suffix . ' to replace the site URL failed: ' . $db->error, 'other' );
+					throw new SafeGrd_Exception( esc_html( 'Reading ' . $suffix . ' to replace the site URL failed: ' . $db->error ), 'other' );
 				}
 				$n = 0;
 				while ( $row = $res->fetch_assoc() ) {
@@ -688,7 +701,7 @@ final class SafeGrd_Restore {
 						}
 					}
 					if ( $set && false === $db->query( 'UPDATE `' . $name . '` SET ' . implode( ',', $set ) . " WHERE `$key` = '" . $db->real_escape_string( (string) $row[ $key ] ) . "'" ) ) {
-						throw new SafeGrd_Exception( 'Replacing the site URL in ' . $suffix . ' failed: ' . $db->error, 'other' );
+						throw new SafeGrd_Exception( esc_html( 'Replacing the site URL in ' . $suffix . ' failed: ' . $db->error ), 'other' );
 					}
 					$this->job['pk'] = $row[ $key ];
 				}
@@ -793,11 +806,11 @@ final class SafeGrd_Restore {
 			}
 			$dst = $stage . '/' . substr( $row['path'], strlen( $prefix ) );
 			if ( ! wp_mkdir_p( dirname( $dst ) ) ) {
-				throw new SafeGrd_Exception( 'Could not create ' . dirname( $dst ) . '.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'Could not create ' . dirname( $dst ) . '.' ), 'other' );
 			}
 			$fh = fopen( $dst, 'wb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
 			if ( false === $fh ) {
-				throw new SafeGrd_Exception( 'Could not write ' . $dst . '.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'Could not write ' . $dst . '.' ), 'other' );
 			}
 			$h = hash_init( 'sha256' );
 			foreach ( '' === $row['content'] ? array() : explode( ',', $row['content'] ) as $id ) {
@@ -807,7 +820,7 @@ final class SafeGrd_Restore {
 			}
 			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 			if ( hash_final( $h ) !== $row['sha256'] ) {
-				throw new SafeGrd_Exception( $row['path'] . ' does not match its SHA-256. Nothing was restored.', 'other' );
+				throw new SafeGrd_Exception( esc_html( $row['path'] . ' does not match its SHA-256. Nothing was restored.' ), 'other' );
 			}
 			$mode = (int) $row['mode'] & 0777;
 			if ( $mode ) {
@@ -859,7 +872,7 @@ final class SafeGrd_Restore {
 		}
 
 		$maintenance = ABSPATH . '.maintenance';
-		$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- best effort; the swap is quick either way.
+		$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
 
 		$renames = array();
 		foreach ( $this->job['manifest']['tables'] as $t ) {
@@ -872,11 +885,11 @@ final class SafeGrd_Restore {
 		}
 		if ( false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
 			if ( $maint ) {
-				@unlink( $maintenance ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+				wp_delete_file( $maintenance );
 			}
 			$this->job['stage'] = 'swap';
 			$this->save();
-			throw new SafeGrd_Exception( 'The database refused to swap the restored tables in: ' . $db->error . '. The site is as it was.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'The database refused to swap the restored tables in: ' . $db->error . '. The site is as it was.' ), 'other' );
 		}
 
 		// Files: each top-level entry of the content directory, kept aside
@@ -892,23 +905,23 @@ final class SafeGrd_Restore {
 			if ( 'mu-plugins' === $name && is_dir( $content . '/mu-plugins' ) ) {
 				foreach ( (array) scandir( $stage . '/mu-plugins' ) as $mu ) {
 					if ( '.' !== $mu && '..' !== $mu && ! file_exists( $content . '/mu-plugins/' . $mu ) ) {
-						rename( $stage . '/mu-plugins/' . $mu, $content . '/mu-plugins/' . $mu );
+						self::move( $stage . '/mu-plugins/' . $mu, $content . '/mu-plugins/' . $mu );
 					}
 				}
 				continue;
 			}
 			if ( file_exists( $content . '/' . $name ) ) {
-				rename( $content . '/' . $name, $keep . '/' . $name );
+				self::move( $content . '/' . $name, $keep . '/' . $name );
 			}
-			rename( $stage . '/' . $name, $content . '/' . $name );
+			self::move( $stage . '/' . $name, $content . '/' . $name );
 		}
 		self::rmdir( $stage );
 		if ( $maint ) {
-			@unlink( $maintenance ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			wp_delete_file( $maintenance );
 		}
 
 		wp_cache_flush();
-		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name = 'rewrite_rules'" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		delete_option( 'rewrite_rules' );
 		$last = array(
 			'snapshot_id' => $this->job['snapshot_id'],
 			'source_url'  => $this->job['source_url'],
@@ -1008,6 +1021,23 @@ final class SafeGrd_Restore {
 		return sprintf( 'Deleted the copy from before the restore: %d tables and its files.', count( $drop ) );
 	}
 
+	/**
+	 * Moves a file or directory within the content directory, through
+	 * WordPress's direct filesystem: the swap runs in a background request,
+	 * where no FTP credentials can be asked for. A move that fails stops the
+	 * restore and says which.
+	 */
+	private static function move( $from, $to ) {
+		if ( ! class_exists( 'WP_Filesystem_Direct' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+		}
+		$fs = new WP_Filesystem_Direct( null );
+		if ( ! $fs->move( $from, $to, false ) ) {
+			throw new SafeGrd_Exception( esc_html( 'Could not move ' . $from . ' to ' . $to . '. The files may be part swapped: the ones kept aside are in the content directory under safegrd-before-restore-*.' ), 'other' );
+		}
+	}
+
 	private static function rmdir( $dir ) {
 		if ( ! is_dir( $dir ) || is_link( $dir ) ) {
 			return;
@@ -1020,7 +1050,7 @@ final class SafeGrd_Restore {
 			if ( is_dir( $p ) && ! is_link( $p ) ) {
 				self::rmdir( $p );
 			} else {
-				@unlink( $p ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+				wp_delete_file( $p );
 			}
 		}
 		@rmdir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_rmdir

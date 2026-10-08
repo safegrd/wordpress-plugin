@@ -74,6 +74,15 @@ final class SafeGrd_Backup {
 	 * @param callable|null $say    Receives one line of progress at a time.
 	 * @param int|null      $budget Seconds a slice may run; null decides from the host's limit.
 	 */
+	/**
+	 * Whether a slice that leaves work starts the next in a request of its
+	 * own. WP-CLI runs its slices one after another itself, and a loopback
+	 * would only compete with it for the lock.
+	 *
+	 * @var bool
+	 */
+	public $chain = true;
+
 	public function __construct( $say = null, $budget = null ) {
 		$this->say    = $say;
 		$this->budget = null === $budget ? self::default_budget() : (float) $budget;
@@ -135,8 +144,7 @@ final class SafeGrd_Backup {
 			);
 		}
 		if ( function_exists( 'set_time_limit' ) ) {
-			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- some hosts disable it; the slice budget still holds.
-			@set_time_limit( 0.0 === $this->budget ? 0 : (int) ceil( $this->budget * 3 + 60 ) );
+			@set_time_limit( 0.0 === $this->budget ? 0 : (int) ceil( $this->budget * 3 + 60 ) ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged, WordPress.PHP.NoSilencedErrors.Discouraged -- each slice sets its own limit; some hosts disable the function, and the slice budget still holds.
 		}
 		ignore_user_abort( true );
 		wp_raise_memory_limit( 'admin' );
@@ -179,7 +187,7 @@ final class SafeGrd_Backup {
 			return $this->slice_failed( $e );
 		} finally {
 			$this->unlock();
-			if ( $next ) {
+			if ( $next && $this->chain ) {
 				// After the unlock, so the next slice finds the lock free.
 				SafeGrd_Scheduler::continue_now();
 			}
@@ -194,7 +202,7 @@ final class SafeGrd_Backup {
 		$node_id = SafeGrd_Settings::get( 'node_id' );
 		$info    = $this->client->call( 'GET', '/api/v1/nodes/' . rawurlencode( $node_id ) . '/hosted' );
 		if ( is_wp_error( $info ) ) {
-			throw new SafeGrd_Exception( 'Hosted storage: ' . $info->get_error_message(), 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $info->get_error_message() ), 'storage' );
 		}
 		if ( ! empty( $info['warning'] ) ) {
 			$this->say( 'Warning: ' . $info['warning'] );
@@ -269,7 +277,7 @@ final class SafeGrd_Backup {
 		}
 		$view = $this->repo->open_epoch( $req );
 		if ( empty( $view['epoch']['epoch_id'] ) ) {
-			throw new SafeGrd_Exception( 'Hosted storage opened no epoch.', 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage opened no epoch.' ), 'storage' );
 		}
 		if ( empty( $view['new'] ) && ( $state['epoch_id'] ?? '' ) !== $view['epoch']['epoch_id'] ) {
 			// The server continues an epoch this site has no cache for: start
@@ -279,7 +287,7 @@ final class SafeGrd_Backup {
 			$view          = $this->repo->open_epoch( $req );
 		}
 		if ( 'fixed' !== ( $view['epoch']['chunker']['algorithm'] ?? '' ) || SafeGrd_Settings::get( 'recipient' ) !== $view['epoch']['recipient'] ) {
-			throw new SafeGrd_Exception( 'Hosted storage opened an epoch this plugin cannot write into: another chunker or another key.', 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage opened an epoch this plugin cannot write into: another chunker or another key.' ), 'storage' );
 		}
 		SafeGrd_Repo_Cache::keep_only( $view['epoch']['epoch_id'] );
 		update_option(
@@ -756,7 +764,7 @@ final class SafeGrd_Backup {
 		$this->checkpoint();
 		$where = SafeGrd_Repo_Cache::locate( $job['epoch_id'], array_merge( array_keys( $data ), array_keys( $trees ) ) );
 		if ( $where['missing'] ) {
-			throw new SafeGrd_Exception( sprintf( 'The snapshot would name %d blobs this site has no record of storing.', count( $where['missing'] ) ), 'other' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'The snapshot would name %d blobs this site has no record of storing.', count( $where['missing'] ) ) ), 'other' );
 		}
 		$content_root = SafeGrd_Repo_Format::content_root( $lines );
 
@@ -962,16 +970,16 @@ final class SafeGrd_Backup {
 			$this->rows            = array();
 			$this->save_job();
 			SafeGrd_Scheduler::continue_later( 60 * $this->job['attempts'] );
-			$this->say( 'Warning: ' . $e->getMessage() . ' Trying again in a minute.' );
+			$this->say( 'Warning: ' . SafeGrd_Exception::text( $e ) . ' Trying again in a minute.' );
 			$run            = $this->progress( 'running' );
-			$run['message'] = $e->getMessage() . ' Trying again.';
+			$run['message'] = SafeGrd_Exception::text( $e ) . ' Trying again.';
 			SafeGrd_Settings::record_run( $run );
 			return $run;
 		}
 		$snapshot_id = is_array( $this->job ) ? $this->job['snapshot_id'] : '';
 		delete_option( self::JOB );
 		SafeGrd_Scheduler::continue_cancel();
-		return $this->record_failure( $e->getMessage(), $reason, $snapshot_id );
+		return $this->record_failure( SafeGrd_Exception::text( $e ), $reason, $snapshot_id );
 	}
 
 	/**
@@ -1060,25 +1068,51 @@ final class SafeGrd_Backup {
 	// --- the lock -----------------------------------------------------------
 
 	/**
-	 * Takes the slice lock, shared by backups and restores. add_option is a
-	 * single INSERT, so two slices that race for it cannot both win. A lock
-	 * older than a slice can run belongs to one the host stopped.
+	 * Takes the slice lock, shared by backups and restores, so one slice
+	 * runs at a time. The lock row holds when it goes stale: a holder with
+	 * no time limit (WP-CLI) is not taken over by a slice that would give up
+	 * sooner. add_option() is no lock: it upserts, and it reads through this
+	 * request's option cache, so two slices could both take it. Here a free
+	 * lock is taken by INSERT IGNORE and a stale one by compare-and-swap on
+	 * the value read, and only the request whose statement changed the row
+	 * holds it.
 	 */
 	public static function take_lock( $budget ) {
-		$now = time();
-		if ( add_option( self::LOCK, $now, '', 'no' ) ) {
-			return true;
+		global $wpdb;
+		$now   = time();
+		$value = (string) ( $now + self::stale_seconds( $budget ) );
+		$took  = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $wpdb->options, self::LOCK, $value ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- a lock needs one atomic statement; the options API has none.
+		if ( 1 !== $took ) {
+			$held = self::lock_value();
+			if ( null !== $held && (int) $held > $now ) {
+				return false;
+			}
+			$took = null === $held
+				? $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $wpdb->options, self::LOCK, $value ) ) // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- as above.
+				: $wpdb->query( $wpdb->prepare( 'UPDATE %i SET option_value = %s WHERE option_name = %s AND option_value = %s', $wpdb->options, $value, self::LOCK, $held ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- as above.
 		}
-		$held = (int) get_option( self::LOCK, 0 );
-		if ( $held && $now - $held < self::stale_seconds( $budget ) ) {
+		if ( 1 !== $took ) {
 			return false;
 		}
-		delete_option( self::LOCK );
-		return add_option( self::LOCK, $now, '', 'no' );
+		// The slice reads the job the last slice saved, in whichever request
+		// that ran, not this request's cached copy.
+		wp_cache_delete( self::JOB, 'options' );
+		wp_cache_delete( SafeGrd_Restore::JOB, 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
+		return true;
 	}
 
 	public static function release_lock() {
-		delete_option( self::LOCK );
+		global $wpdb;
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE option_name = %s', $wpdb->options, self::LOCK ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the lock row, read only by take_lock.
+		wp_cache_delete( self::LOCK, 'options' );
+	}
+
+	/** When the held lock goes stale, as stored; null when none is held. */
+	private static function lock_value() {
+		global $wpdb;
+		return $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, self::LOCK ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- read past the option cache, which another request's lock does not reach.
 	}
 
 	/** Seconds after which a held lock belongs to a slice the host stopped. */
@@ -1100,6 +1134,6 @@ final class SafeGrd_Backup {
 
 	/** Whether a backup is under way: a slice running, or one still to come. */
 	public static function running() {
-		return is_array( get_option( self::JOB, null ) ) || (int) get_option( self::LOCK, 0 ) > time() - 600;
+		return is_array( get_option( self::JOB, null ) ) || (int) self::lock_value() > time();
 	}
 }

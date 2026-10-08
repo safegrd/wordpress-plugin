@@ -26,20 +26,20 @@ final class SafeGrd_Age_Reader {
 	public static function decrypt( $ciphertext, $identity ) {
 		list( $hrp, $secret ) = SafeGrd_Bech32::decode( trim( $identity ) );
 		if ( 'age-secret-key-' !== $hrp || 32 !== strlen( $secret ) ) {
-			throw new SafeGrd_Exception( 'The key SafeGrd released is not an age X25519 identity.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'The key SafeGrd released is not an age X25519 identity.' ), 'other' );
 		}
 		$public = sodium_crypto_scalarmult_base( $secret );
 
 		$intro = "age-encryption.org/v1\n";
 		if ( 0 !== strpos( $ciphertext, $intro ) ) {
-			throw new SafeGrd_Exception( 'An object of the backup is not an age file.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'An object of the backup is not an age file.' ), 'other' );
 		}
 		$pos      = strlen( $intro );
 		$file_key = null;
 		while ( true ) {
 			$eol = strpos( $ciphertext, "\n", $pos );
 			if ( false === $eol ) {
-				throw new SafeGrd_Exception( 'An age header ends early.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'An age header ends early.' ), 'other' );
 			}
 			$line = substr( $ciphertext, $pos, $eol - $pos );
 			if ( 0 === strpos( $line, '---' ) ) {
@@ -49,7 +49,7 @@ final class SafeGrd_Age_Reader {
 				break;
 			}
 			if ( 0 !== strpos( $line, '-> ' ) ) {
-				throw new SafeGrd_Exception( 'An age header has a malformed stanza.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'An age header has a malformed stanza.' ), 'other' );
 			}
 			$args = explode( ' ', substr( $line, 3 ) );
 			$pos  = $eol + 1;
@@ -58,7 +58,7 @@ final class SafeGrd_Age_Reader {
 			while ( true ) {
 				$eol = strpos( $ciphertext, "\n", $pos );
 				if ( false === $eol ) {
-					throw new SafeGrd_Exception( 'An age stanza ends early.', 'other' );
+					throw new SafeGrd_Exception( esc_html( 'An age stanza ends early.' ), 'other' );
 				}
 				$bl    = substr( $ciphertext, $pos, $eol - $pos );
 				$body .= $bl;
@@ -79,11 +79,11 @@ final class SafeGrd_Age_Reader {
 			}
 		}
 		if ( null === $file_key ) {
-			throw new SafeGrd_Exception( 'This backup is not sealed to the key SafeGrd released for it.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'This backup is not sealed to the key SafeGrd released for it.' ), 'other' );
 		}
 		$expect = hash_hmac( 'sha256', substr( $ciphertext, 0, $mac_at ), hash_hkdf( 'sha256', $file_key, 32, 'header', '' ), true );
 		if ( ! hash_equals( $expect, $mac ) ) {
-			throw new SafeGrd_Exception( 'An age header does not authenticate: the object was altered.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'An age header does not authenticate: the object was altered.' ), 'other' );
 		}
 		$nonce   = substr( $ciphertext, $pos, 16 );
 		$payload = substr( $ciphertext, $pos + 16 );
@@ -98,7 +98,7 @@ final class SafeGrd_Age_Reader {
 			$iv    = "\0\0\0" . pack( 'J', $counter ) . ( $last ? "\x01" : "\x00" );
 			$plain = sodium_crypto_aead_chacha20poly1305_ietf_decrypt( $chunk, '', $iv, $key );
 			if ( false === $plain ) {
-				throw new SafeGrd_Exception( 'An age payload does not authenticate: the object was altered or cut short.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'An age payload does not authenticate: the object was altered or cut short.' ), 'other' );
 			}
 			$out .= $plain;
 			$counter++;
@@ -111,7 +111,7 @@ final class SafeGrd_Age_Reader {
 	private static function b64( $s ) {
 		$raw = base64_decode( $s . str_repeat( '=', ( 4 - strlen( $s ) % 4 ) % 4 ), true );
 		if ( false === $raw ) {
-			throw new SafeGrd_Exception( 'An age header holds malformed base64.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'An age header holds malformed base64.' ), 'other' );
 		}
 		return $raw;
 	}
@@ -124,7 +124,7 @@ final class SafeGrd_Age_Reader {
 final class SafeGrd_Zstd_Reader {
 	public static function decode( $data ) {
 		if ( "\x28\xb5\x2f\xfd" !== substr( $data, 0, 4 ) ) {
-			throw new SafeGrd_Exception( 'An object of the backup is not a zstd frame.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'An object of the backup is not a zstd frame.' ), 'other' );
 		}
 		$fhd    = ord( $data[4] );
 		$pos    = 5;
@@ -150,7 +150,7 @@ final class SafeGrd_Zstd_Reader {
 				$out .= str_repeat( $data[ $pos ], $size );
 				$pos++;
 			} else {
-				throw new SafeGrd_Exception( 'This backup was written by a newer client with compression the plugin cannot read. Restore it with the safegrd CLI.', 'other' );
+				throw new SafeGrd_Exception( esc_html( 'This backup was written by a newer client with compression the plugin cannot read. Restore it with the safegrd CLI.' ), 'other' );
 			}
 			if ( $last ) {
 				break;
@@ -201,7 +201,7 @@ final class SafeGrd_Repo_Reader {
 		foreach ( array_chunk( $want, 200 ) as $batch ) {
 			$r = $this->client->call( 'POST', $this->base . '/download', array( 'keys' => $batch ), 60 );
 			if ( is_wp_error( $r ) ) {
-				throw new SafeGrd_Exception( 'Hosted storage: ' . $r->get_error_message(), 'storage' );
+				throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $r->get_error_message() ), 'storage' );
 			}
 			foreach ( (array) ( $r['objects'] ?? array() ) as $o ) {
 				$this->urls[ $o['key'] ] = array( $o['url'], strtotime( $o['expires_at'] ?? '' ) ?: time() + 600 );
@@ -212,7 +212,7 @@ final class SafeGrd_Repo_Reader {
 	private function get( $key, $from = null, $length = null ) {
 		$this->urls( array( $key ) );
 		if ( empty( $this->urls[ $key ] ) ) {
-			throw new SafeGrd_Exception( 'Hosted storage does not hold ' . $key . '.', 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage does not hold ' . $key . '.' ), 'storage' );
 		}
 		$headers = array();
 		if ( null !== $from ) {
@@ -246,7 +246,7 @@ final class SafeGrd_Repo_Reader {
 				break;
 			}
 		}
-		throw new SafeGrd_Exception( 'Hosted storage: reading ' . $key . ' failed.', 'storage' );
+		throw new SafeGrd_Exception( esc_html( 'Hosted storage: reading ' . $key . ' failed.' ), 'storage' );
 	}
 
 	/** An object sealed as age(zstd(JSON)), decoded. */
@@ -254,7 +254,7 @@ final class SafeGrd_Repo_Reader {
 		$key = $this->prefix . ( 'snapshot' === $kind ? '/snapshots/' . $name . '.age' : '/' . $kind . '/' . $name . '.age' );
 		$v   = json_decode( SafeGrd_Zstd_Reader::decode( SafeGrd_Age_Reader::decrypt( $this->get( $key ), $this->identity ) ), true );
 		if ( ! is_array( $v ) ) {
-			throw new SafeGrd_Exception( 'The backup\'s ' . $kind . ' ' . $name . ' does not parse.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'The backup\'s ' . $kind . ' ' . $name . ' does not parse.' ), 'other' );
 		}
 		return $v;
 	}
@@ -286,13 +286,13 @@ final class SafeGrd_Repo_Reader {
 		$key  = $this->prefix . '/packs/' . $pack;
 		$head = $this->get( $key, 0, 12 );
 		if ( 'SGPK' !== substr( $head, 0, 4 ) || 1 !== ord( $head[4] ) ) {
-			throw new SafeGrd_Exception( 'Pack ' . $pack . ' is not a pack this plugin reads.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Pack ' . $pack . ' is not a pack this plugin reads.' ), 'other' );
 		}
 		$w       = unpack( 'V', substr( $head, 8, 4 ) )[1];
 		$wrapped = $this->get( $key, 12, $w );
 		$k       = SafeGrd_Age_Reader::decrypt( $wrapped, $this->identity );
 		if ( 32 !== strlen( $k ) ) {
-			throw new SafeGrd_Exception( 'Pack ' . $pack . ' has a malformed key.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Pack ' . $pack . ' has a malformed key.' ), 'other' );
 		}
 		$this->pack_keys[ $pack ] = $k;
 		return $k;
@@ -303,16 +303,16 @@ final class SafeGrd_Repo_Reader {
 	 */
 	public function blob( $id ) {
 		if ( ! isset( $this->index[ $id ] ) ) {
-			throw new SafeGrd_Exception( 'Blob ' . $id . ' is in no index the snapshot names.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Blob ' . $id . ' is in no index the snapshot names.' ), 'other' );
 		}
 		list( $pack, $offset, $length, $raw, $type ) = $this->index[ $id ];
 		if ( $type & 0x80 ) {
-			throw new SafeGrd_Exception( 'This backup was written by a newer client with compression the plugin cannot read. Restore it with the safegrd CLI.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'This backup was written by a newer client with compression the plugin cannot read. Restore it with the safegrd CLI.' ), 'other' );
 		}
 		$record = $this->get( $this->prefix . '/packs/' . $pack, $offset, $length );
 		$plain  = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt( substr( $record, 24 ), hex2bin( $id ) . chr( $type ), substr( $record, 0, 24 ), $this->pack_key( $pack ) );
 		if ( false === $plain || strlen( $plain ) !== $raw || hash( 'sha256', $plain ) !== $id ) {
-			throw new SafeGrd_Exception( 'Blob ' . $id . ' does not authenticate or does not match its id: the backup was altered.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Blob ' . $id . ' does not authenticate or does not match its id: the backup was altered.' ), 'other' );
 		}
 		return $plain;
 	}
@@ -321,7 +321,7 @@ final class SafeGrd_Repo_Reader {
 	public function tree( $id ) {
 		$t = json_decode( $this->blob( $id ), true );
 		if ( ! is_array( $t ) || ! isset( $t['entries'] ) ) {
-			throw new SafeGrd_Exception( 'Tree ' . $id . ' does not parse.', 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Tree ' . $id . ' does not parse.' ), 'other' );
 		}
 		return $t['entries'];
 	}

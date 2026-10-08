@@ -76,7 +76,7 @@ final class SafeGrd_Repo_Format {
 	public static function json( $v ) {
 		$s = wp_json_encode( $v, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 		if ( false === $s ) {
-			throw new SafeGrd_Exception( 'Could not encode the repository JSON: ' . json_last_error_msg(), 'other' );
+			throw new SafeGrd_Exception( esc_html( 'Could not encode the repository JSON: ' . json_last_error_msg() ), 'other' );
 		}
 		return $s;
 	}
@@ -308,14 +308,14 @@ final class SafeGrd_Repo_Cache {
 	/** Forgets every epoch but this one. */
 	public static function keep_only( $epoch_id ) {
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'DELETE FROM ' . self::files_table() . ' WHERE epoch_id <> %s', $epoch_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$wpdb->query( $wpdb->prepare( 'DELETE FROM ' . self::blobs_table() . ' WHERE epoch_id <> %s', $epoch_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE epoch_id <> %s', self::files_table(), $epoch_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE epoch_id <> %s', self::blobs_table(), $epoch_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 	}
 
 	public static function forget_all() {
 		global $wpdb;
-		$wpdb->query( 'DROP TABLE IF EXISTS ' . self::files_table() ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		$wpdb->query( 'DROP TABLE IF EXISTS ' . self::blobs_table() ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', self::files_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', self::blobs_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 		delete_option( 'safegrd_cache_version' );
 	}
 
@@ -329,7 +329,7 @@ final class SafeGrd_Repo_Cache {
 		$out = array();
 		foreach ( array_chunk( array_values( array_unique( $ids ) ), 500 ) as $chunk ) {
 			$in   = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
-			$rows = $wpdb->get_col( $wpdb->prepare( 'SELECT id FROM ' . self::blobs_table() . " WHERE epoch_id = %s AND id IN ($in)", array_merge( array( $epoch_id ), $chunk ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+			$rows = $wpdb->get_col( $wpdb->prepare( "SELECT id FROM %i WHERE epoch_id = %s AND id IN ($in)", array_merge( array( self::blobs_table(), $epoch_id ), $chunk ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- the plugin's own table, which only this plugin reads and writes; $in is one %s per id, passed in the array.
 			foreach ( $rows as $id ) {
 				$out[ $id ] = true;
 			}
@@ -347,7 +347,7 @@ final class SafeGrd_Repo_Cache {
 				$values[] = '(%s,%s,%d,%s,%d,%d,%d,%d,%s,0)';
 				array_push( $args, $epoch_id, $b['id'], $b['type'], $pack_id, $pack_bytes, $b['offset'], $b['length'], $b['raw_length'], $run_id );
 			}
-			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO ' . self::blobs_table() . ' (epoch_id,id,type,pack_id,pack_bytes,offset,length,raw_length,run_id,committed) VALUES ' . implode( ',', $values ), $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO %i (epoch_id,id,type,pack_id,pack_bytes,offset,length,raw_length,run_id,committed) VALUES ' . implode( ',', $values ), array_merge( array( self::blobs_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
 		}
 	}
 
@@ -357,18 +357,18 @@ final class SafeGrd_Repo_Cache {
 	 */
 	public static function adopt( $epoch_id, $run_id ) {
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::blobs_table() . ' SET run_id = %s WHERE epoch_id = %s AND committed = 0', $run_id, $epoch_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare( 'UPDATE %i SET run_id = %s WHERE epoch_id = %s AND committed = 0', self::blobs_table(), $run_id, $epoch_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 	}
 
 	public static function mark_committed( $epoch_id, $run_id ) {
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::blobs_table() . ' SET committed = 1 WHERE epoch_id = %s AND run_id = %s', $epoch_id, $run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare( 'UPDATE %i SET committed = 1 WHERE epoch_id = %s AND run_id = %s', self::blobs_table(), $epoch_id, $run_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 	}
 
 	/** The blobs this run stored first, by pack: the run's index. */
 	public static function run_index( $epoch_id, $run_id ) {
 		global $wpdb;
-		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT id,type,pack_id,pack_bytes,offset,length,raw_length FROM ' . self::blobs_table() . ' WHERE epoch_id = %s AND run_id = %s ORDER BY pack_id, offset', $epoch_id, $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT id,type,pack_id,pack_bytes,offset,length,raw_length FROM %i WHERE epoch_id = %s AND run_id = %s ORDER BY pack_id, offset', self::blobs_table(), $epoch_id, $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 		$packs = array();
 		foreach ( $rows as $r ) {
 			if ( ! isset( $packs[ $r['pack_id'] ] ) ) {
@@ -401,7 +401,7 @@ final class SafeGrd_Repo_Cache {
 		$found = array();
 		foreach ( array_chunk( array_values( array_unique( $ids ) ), 500 ) as $chunk ) {
 			$in   = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
-			$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT id,pack_id,run_id FROM ' . self::blobs_table() . " WHERE epoch_id = %s AND id IN ($in)", array_merge( array( $epoch_id ), $chunk ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,pack_id,run_id FROM %i WHERE epoch_id = %s AND id IN ($in)", array_merge( array( self::blobs_table(), $epoch_id ), $chunk ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- the plugin's own table, which only this plugin reads and writes; $in is one %s per id, passed in the array.
 			foreach ( $rows as $r ) {
 				$found[ $r['id'] ]       = true;
 				$packs[ $r['pack_id'] ] = true;
@@ -424,7 +424,7 @@ final class SafeGrd_Repo_Cache {
 	/** A file's row from an earlier run of this epoch, or null. */
 	public static function file( $epoch_id, $path ) {
 		global $wpdb;
-		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT size,mtime,inode,mode,sha256,blobs FROM ' . self::files_table() . ' WHERE epoch_id = %s AND path_hash = %s', $epoch_id, hash( 'sha256', $path ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT size,mtime,inode,mode,sha256,blobs FROM %i WHERE epoch_id = %s AND path_hash = %s', self::files_table(), $epoch_id, hash( 'sha256', $path ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 		return $row ? $row : null;
 	}
 
@@ -438,26 +438,26 @@ final class SafeGrd_Repo_Cache {
 				$values[] = '(%s,%s,%s,%d,%d,%d,%d,%s,%s,%s)';
 				array_push( $args, $epoch_id, hash( 'sha256', $r['path'] ), $r['path'], $r['size'], $r['mtime'], $r['inode'], $r['mode'], $r['sha256'], implode( ',', $r['content'] ), $run_id );
 			}
-			$wpdb->query( $wpdb->prepare( 'INSERT INTO ' . self::files_table() . ' (epoch_id,path_hash,path,size,mtime,inode,mode,sha256,blobs,run_id) VALUES ' . implode( ',', $values ) . ' ON DUPLICATE KEY UPDATE size=VALUES(size), mtime=VALUES(mtime), inode=VALUES(inode), mode=VALUES(mode), sha256=VALUES(sha256), blobs=VALUES(blobs), run_id=VALUES(run_id)', $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+			$wpdb->query( $wpdb->prepare( 'INSERT INTO %i (epoch_id,path_hash,path,size,mtime,inode,mode,sha256,blobs,run_id) VALUES ' . implode( ',', $values ) . ' ON DUPLICATE KEY UPDATE size=VALUES(size), mtime=VALUES(mtime), inode=VALUES(inode), mode=VALUES(mode), sha256=VALUES(sha256), blobs=VALUES(blobs), run_id=VALUES(run_id)', array_merge( array( self::files_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
 		}
 	}
 
 	/** Every file this run saw. */
 	public static function run_files( $epoch_id, $run_id ) {
 		global $wpdb;
-		return $wpdb->get_results( $wpdb->prepare( 'SELECT path,size,mtime,mode,sha256,blobs FROM ' . self::files_table() . ' WHERE epoch_id = %s AND run_id = %s', $epoch_id, $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return $wpdb->get_results( $wpdb->prepare( 'SELECT path,size,mtime,mode,sha256,blobs FROM %i WHERE epoch_id = %s AND run_id = %s', self::files_table(), $epoch_id, $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 	}
 
 	/** Moves the files a run saw to another run. */
 	public static function retag_run( $epoch_id, $from, $to ) {
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::files_table() . ' SET run_id = %s WHERE epoch_id = %s AND run_id = %s', $to, $epoch_id, $from ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare( 'UPDATE %i SET run_id = %s WHERE epoch_id = %s AND run_id = %s', self::files_table(), $to, $epoch_id, $from ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 	}
 
 	/** Drops this run's rows of paths it has not finished, for a fresh start. */
 	public static function forget_run( $epoch_id, $run_id ) {
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::files_table() . " SET run_id = '' WHERE epoch_id = %s AND run_id = %s", $epoch_id, $run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare( "UPDATE %i SET run_id = '' WHERE epoch_id = %s AND run_id = %s", self::files_table(), $epoch_id, $run_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
 	}
 }
 
@@ -487,7 +487,7 @@ final class SafeGrd_Repo_Client {
 				continue;
 			}
 			$reason = ( 402 === $status || 507 === $status ) ? 'quota' : 'storage';
-			throw new SafeGrd_Exception( 'Hosted storage: ' . $r->get_error_message(), $reason );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $r->get_error_message() ), esc_html( $reason ) );
 		}
 	}
 
@@ -521,7 +521,7 @@ final class SafeGrd_Repo_Client {
 			)
 		);
 		if ( empty( $slots['objects'][0]['url'] ) ) {
-			throw new SafeGrd_Exception( 'Hosted storage signed no URL for ' . $kind . ' ' . $name . '.', 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Hosted storage signed no URL for ' . $kind . ' ' . $name . '.' ), 'storage' );
 		}
 		$slot    = $slots['objects'][0];
 		$headers = array();
@@ -547,7 +547,7 @@ final class SafeGrd_Repo_Client {
 			}
 		}
 		if ( '' !== $last ) {
-			throw new SafeGrd_Exception( sprintf( 'Hosted storage: uploading %s %s failed: %s', $kind, $name, $last ), 'storage' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'Hosted storage: uploading %s %s failed: %s', $kind, $name, $last ) ), 'storage' );
 		}
 		$this->call( 'POST', '/epochs/' . rawurlencode( $epoch_id ) . '/uploaded', array( 'keys' => array( $slot['key'] ) ) );
 		return $slot['key'];

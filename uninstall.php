@@ -16,10 +16,14 @@ delete_option( 'safegrd_repo' );
 delete_option( 'safegrd_cache_version' );
 delete_option( 'safegrd_slice_key' );
 delete_option( 'safegrd_backup_requested' );
+delete_option( 'safegrd_restore' );
+delete_option( 'safegrd_last_restore' );
 delete_transient( 'safegrd_plans' );
 global $wpdb;
-$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'safegrd_files' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'safegrd_blobs' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegrd_files' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
+$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegrd_blobs' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
+$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegrd_restore_files' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
+$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegrd_restore_index' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
 delete_transient( 'safegrd_connect_session' );
 wp_clear_scheduled_hook( 'safegrd_scheduled_backup' );
 wp_clear_scheduled_hook( 'safegrd_backup_now' );

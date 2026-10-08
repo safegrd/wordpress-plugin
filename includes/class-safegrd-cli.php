@@ -120,7 +120,9 @@ final class SafeGrd_CLI {
 		// whose host stops long requests resumes from.
 		$retries = 0;
 		do {
-			$run = ( new SafeGrd_Backup( $say ) )->run( true );
+			$backup        = new SafeGrd_Backup( $say );
+			$backup->chain = false;
+			$run           = $backup->run( true );
 			if ( 'busy' === $run['status'] ) {
 				WP_CLI::error( $run['message'] . ' Run wp safegrd status to follow it.' );
 			}
@@ -216,7 +218,9 @@ final class SafeGrd_CLI {
 		};
 		$budget = isset( $assoc['slice-seconds'] ) ? (float) $assoc['slice-seconds'] : null;
 		do {
-			$run = ( new SafeGrd_Restore( $say, $budget ) )->run();
+			$restore        = new SafeGrd_Restore( $say, $budget );
+			$restore->chain = false;
+			$run            = $restore->run();
 			if ( 'busy' === $run['status'] ) {
 				WP_CLI::error( $run['message'] );
 			}

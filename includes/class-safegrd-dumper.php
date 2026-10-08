@@ -49,7 +49,7 @@ final class SafeGrd_Dumper {
 	public static function connect() {
 		global $wpdb;
 		if ( ! class_exists( 'mysqli' ) ) {
-			throw new SafeGrd_Exception( 'PHP on this host has no mysqli extension, so the plugin cannot read the database.', 'source' );
+			throw new SafeGrd_Exception( esc_html( 'PHP on this host has no mysqli extension, so the plugin cannot read the database.' ), 'source' );
 		}
 		$host   = DB_HOST;
 		$port   = null;
@@ -63,14 +63,17 @@ final class SafeGrd_Dumper {
 				}
 			}
 		}
-		$db = mysqli_init();
+		// A connection of its own, not $wpdb: the dump reads every table in one
+		// consistent snapshot and streams large tables row by row
+		// (MYSQLI_USE_RESULT), and $wpdb buffers each result in memory.
+		$db = mysqli_init(); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_init
 		$db->options( MYSQLI_OPT_CONNECT_TIMEOUT, 30 );
 		$flags = defined( 'MYSQL_CLIENT_FLAGS' ) ? MYSQL_CLIENT_FLAGS : 0;
-		mysqli_report( MYSQLI_REPORT_OFF );
+		mysqli_report( MYSQLI_REPORT_OFF ); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_report -- errors are read from the connection.
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- the error is read from connect_error below.
 		$ok = @$db->real_connect( $host, DB_USER, DB_PASSWORD, DB_NAME, $port ? (int) $port : null, $socket, $flags );
 		if ( ! $ok ) {
-			throw new SafeGrd_Exception( 'Could not open a connection to the database for the dump: ' . $db->connect_error, 'source' );
+			throw new SafeGrd_Exception( esc_html( 'Could not open a connection to the database for the dump: ' . $db->connect_error ), 'source' );
 		}
 		$charset = $wpdb->charset ? $wpdb->charset : 'utf8mb4';
 		if ( ! $db->set_charset( $charset ) ) {
@@ -178,7 +181,7 @@ final class SafeGrd_Dumper {
 		$qname  = $this->quote_name( $name );
 		$create = $this->query( 'SHOW CREATE TABLE ' . $qname )->fetch_row();
 		if ( empty( $create[1] ) ) {
-			throw new SafeGrd_Exception( sprintf( 'Could not read the definition of %s.', $name ), 'source' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'Could not read the definition of %s.', $name ) ), 'source' );
 		}
 		$this->emit( "--\n-- Table structure for table " . $qname . "\n--\n\n" );
 		$this->emit( 'DROP TABLE IF EXISTS ' . $qname . ";\n" );
@@ -209,7 +212,7 @@ final class SafeGrd_Dumper {
 
 		$res = $this->db->query( 'SELECT ' . $select . ' FROM ' . $qname . $where, MYSQLI_USE_RESULT );
 		if ( false === $res ) {
-			throw new SafeGrd_Exception( sprintf( 'Reading %s failed: %s', $name, $this->db->error ), 'source' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'Reading %s failed: %s', $name, $this->db->error ) ), 'source' );
 		}
 		$kinds = array();
 		foreach ( $res->fetch_fields() as $f ) {
@@ -237,7 +240,7 @@ final class SafeGrd_Dumper {
 		$err = $this->db->errno ? $this->db->error : '';
 		$res->free();
 		if ( '' !== $err ) {
-			throw new SafeGrd_Exception( sprintf( 'Reading %s stopped part way: %s', $name, $err ), 'source' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'Reading %s stopped part way: %s', $name, $err ) ), 'source' );
 		}
 		if ( '' !== $stmt ) {
 			$this->emit( $stmt . ";\n" );
@@ -303,14 +306,14 @@ final class SafeGrd_Dumper {
 
 	private function exec( $sql ) {
 		if ( false === $this->db->query( $sql ) ) {
-			throw new SafeGrd_Exception( sprintf( 'The database refused %s: %s', $sql, $this->db->error ), 'source' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'The database refused %s: %s', $sql, $this->db->error ) ), 'source' );
 		}
 	}
 
 	private function query( $sql ) {
 		$res = $this->db->query( $sql );
 		if ( ! ( $res instanceof mysqli_result ) ) {
-			throw new SafeGrd_Exception( sprintf( 'The database refused %s: %s', $sql, $this->db->error ), 'source' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'The database refused %s: %s', $sql, $this->db->error ) ), 'source' );
 		}
 		return $res;
 	}

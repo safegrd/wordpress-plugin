@@ -314,7 +314,7 @@ final class SafeGrd_Admin {
 
 	public static function ajax_connect_start() {
 		self::guard();
-		$custody = isset( $_POST['custody'] ) ? sanitize_key( wp_unslash( $_POST['custody'] ) ) : 'safegrd';
+		$custody = isset( $_POST['custody'] ) ? sanitize_key( wp_unslash( $_POST['custody'] ) ) : 'safegrd'; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 		$s       = SafeGrd_Connect::start( $custody );
 		if ( is_wp_error( $s ) ) {
 			wp_send_json_error( array( 'message' => $s->get_error_message() ) );
@@ -357,7 +357,7 @@ final class SafeGrd_Admin {
 			'restore'   => self::describe_restore(),
 			'progress'  => self::describe_restore_progress(),
 		);
-		if ( SafeGrd_Settings::connected() && empty( $_POST['local'] ) ) {
+		if ( SafeGrd_Settings::connected() && empty( $_POST['local'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 			$client = SafeGrd_Client::for_site();
 			$node   = rawurlencode( SafeGrd_Settings::get( 'node_id' ) );
 			$snaps  = $client->call( 'GET', '/api/v1/snapshots?node_id=' . $node . '&limit=5', null, 15 );
@@ -410,7 +410,7 @@ final class SafeGrd_Admin {
 
 	public static function ajax_restore_start() {
 		self::guard();
-		$id = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : '';
+		$id = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 		$ok = SafeGrd_Restore::begin( $id );
 		if ( is_wp_error( $ok ) ) {
 			wp_send_json_error( array( 'message' => $ok->get_error_message() ) );
