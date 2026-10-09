@@ -145,6 +145,64 @@ final class SafeGrd_Site {
 		return 'others';
 	}
 
+	/**
+	 * The exclusions set on the Tools page, checked: one pattern per line.
+	 * A pattern with a slash is a path from the site root, wp-content/...,
+	 * and leaves out everything under it. One without is a file or directory
+	 * name, * and ? allowed, left out anywhere but under uploads.
+	 *
+	 * @param string $text What was typed.
+	 * @return array|WP_Error The patterns, or why one is refused.
+	 */
+	public static function check_exclusions( $text ) {
+		$content = self::content_path();
+		$uploads = self::uploads_path();
+		$out     = array();
+		foreach ( preg_split( '/\r\n|\r|\n/', (string) $text ) as $line ) {
+			$p = trim( str_replace( '\\', '/', $line ) );
+			if ( '' === $p || '#' === $p[0] ) {
+				continue;
+			}
+			$p = rtrim( $p, '/' );
+			if ( false !== strpos( $p, '..' ) || '/' === $p[0] || preg_match( '/[\x00-\x1f]/', $p ) ) {
+				return new WP_Error( 'safegrd_exclude', sprintf( '"%s" is not a path inside the site. Write a path from the site root, such as %s/cache-old, or a name such as *.zip.', $p, $content ) );
+			}
+			if ( false !== strpos( $p, '/' ) ) {
+				if ( 0 !== strpos( $p . '/', $content . '/' ) || $p === $content ) {
+					return new WP_Error( 'safegrd_exclude', sprintf( '"%s" is outside %s. Only files under %s can be left out.', $p, $content, $content ) );
+				}
+				if ( 0 === strpos( $p . '/', $uploads . '/' ) || 0 === strpos( $uploads . '/', $p . '/' ) ) {
+					return new WP_Error( 'safegrd_exclude', sprintf( '"%s" is in %s. The test restore checks that every attachment the database names is in the backup, so uploads stay in it.', $p, $uploads ) );
+				}
+			}
+			$out[] = $p;
+		}
+		if ( count( $out ) > 50 ) {
+			return new WP_Error( 'safegrd_exclude', 'At most 50 patterns.' );
+		}
+		return array_values( array_unique( $out ) );
+	}
+
+	/**
+	 * The exclusion pattern a path matches, or ''.
+	 *
+	 * @param string $rel      The path from the site root, wp-content/...
+	 * @param array  $patterns From check_exclusions().
+	 */
+	public static function excluded_by( $rel, array $patterns ) {
+		$uploads = self::uploads_path() . '/';
+		foreach ( $patterns as $p ) {
+			if ( false !== strpos( $p, '/' ) ) {
+				if ( $rel === $p || fnmatch( $p, $rel, FNM_PATHNAME ) ) {
+					return $p;
+				}
+			} elseif ( 0 !== strpos( $rel, $uploads ) && fnmatch( $p, basename( $rel ) ) ) {
+				return $p;
+			}
+		}
+		return '';
+	}
+
 	public static function content_path() {
 		$rel = self::relative( rtrim( WP_CONTENT_DIR, '/' ) );
 		return '' !== $rel ? $rel : 'wp-content';

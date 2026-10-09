@@ -21,3 +21,11 @@
 .safegrd .notice[hidden] { display: none; }
 .safegrd .safegrd-health p { font-size: 14px; }
 .safegrd .safegrd-lede, .safegrd > .notice { max-width: 76em; box-sizing: border-box; }
+.safegrd .safegrd-tabs { max-width: 76em; margin-bottom: 16px; }
+.safegrd .safegrd-panel[hidden] { display: none; }
+.safegrd .safegrd-actions { white-space: nowrap; }
+.safegrd .safegrd-actions select { margin-left: 4px; vertical-align: middle; }
+.safegrd .safegrd-parts { margin: 8px 0; }
+.safegrd .safegrd-parts legend { font-weight: 600; margin-bottom: 6px; }
+.safegrd .safegrd-parts label { display: inline-block; margin-right: 16px; }
+.safegrd .safegrd-log { background: #f6f7f7; border: 1px solid #dcdcde; padding: 8px 12px; max-height: 28em; overflow: auto; white-space: pre-wrap; font-size: 12px; }

@@ -322,18 +322,31 @@ final class SafeGrd_CLI {
 	 * <frequency>
 	 * : daily or weekly.
 	 *
+	 * [--at=<hour>]
+	 * : The hour to start at, 0 to 23 in the site's timezone, or any. WP-Cron starts it at the first visit to the site after that hour.
+	 *
 	 * @when after_wp_load
 	 */
 	public function schedule( $args, $assoc ) {
 		if ( ! SafeGrd_Settings::connected() ) {
 			WP_CLI::error( 'Not connected. Run wp safegrd connect first: connecting schedules the first backup at once.' );
 		}
-		if ( ! SafeGrd_Scheduler::set_frequency( $args[0] ) ) {
+		$hour = null;
+		if ( isset( $assoc['at'] ) ) {
+			if ( 'any' === $assoc['at'] ) {
+				$hour = -1;
+			} elseif ( ctype_digit( (string) $assoc['at'] ) && (int) $assoc['at'] <= 23 ) {
+				$hour = (int) $assoc['at'];
+			} else {
+				WP_CLI::error( sprintf( '--at=%s is not an hour. Use 0 to 23, or any.', $assoc['at'] ) );
+			}
+		}
+		if ( ! SafeGrd_Scheduler::set_frequency( $args[0], $hour ) ) {
 			WP_CLI::error( sprintf( '%s is not a schedule the plugin runs. Use daily or weekly.', $args[0] ) );
 		}
 		SafeGrd_Backup::report_schedule();
 		$next = SafeGrd_Scheduler::next_run();
-		WP_CLI::line( sprintf( 'Backs up %s. Next: %s UTC', $args[0], gmdate( 'Y-m-d H:i', $next ) ) );
+		WP_CLI::line( sprintf( 'Backs up %s%s. Next: %s (%s)', $args[0], SafeGrd_Scheduler::hour() >= 0 ? sprintf( ' from %02d:00', SafeGrd_Scheduler::hour() ) : '', wp_date( 'Y-m-d H:i', $next ), wp_timezone_string() ) );
 	}
 
 	/**

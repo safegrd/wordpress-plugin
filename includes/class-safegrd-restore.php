@@ -473,7 +473,7 @@ final class SafeGrd_Restore {
 			}
 		}
 		$this->say( sprintf( 'Snapshot of %s, taken %s: %d tables, %d files', $wp['site_url'], $this->job['taken_at'], count( $manifest['table_stats'] ), count( $files ) ) );
-		if ( count( $this->job['components'] ) < count( SafeGrd_Site::COMPONENTS ) ) {
+		if ( ! $this->downloading() && count( $this->job['components'] ) < count( SafeGrd_Site::COMPONENTS ) ) {
 			$this->say( 'Restoring only: ' . implode( ', ', $this->job['components'] ) );
 		}
 	}
@@ -862,8 +862,11 @@ final class SafeGrd_Restore {
 		}
 		$last    = $this->job['parts'] + $this->job['total_files'];
 		$fetched = $this->job['seq'];
+		$first   = $this->job['seq'];
 		for ( ; $this->job['seq'] < $last; $this->job['seq']++ ) {
-			if ( $this->out_of_time() ) {
+			// At least one file a slice, so a slice whose setup took its
+			// whole time still moves the restore on.
+			if ( $this->job['seq'] > $first && $this->out_of_time() ) {
 				return false;
 			}
 			if ( $this->job['seq'] >= $fetched ) {
@@ -1114,9 +1117,12 @@ final class SafeGrd_Restore {
 		$last    = $this->job['parts'] + $this->job['total_files'];
 		$fetched = $this->job['seq'];
 		$taken   = (int) strtotime( $this->job['taken_at'] );
+		$first   = $this->job['seq'];
 		try {
 			for ( ; $this->job['seq'] < $last; $this->job['seq']++ ) {
-				if ( $this->out_of_time() ) {
+				// At least one file a slice, so a slice whose setup took its
+				// whole time still moves the download on.
+				if ( $this->job['seq'] > $first && $this->out_of_time() ) {
 					// Every file before this one is written: that is where the next slice starts.
 					$flush();
 					$this->mark_written( $out );

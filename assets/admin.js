@@ -144,36 +144,75 @@
 	var status = document.getElementById("safegrd-status");
 	if (!status) return;
 
+	var PARTS = [
+		["database", "Database"],
+		["plugins", "Plugins"],
+		["themes", "Themes"],
+		["uploads", "Uploads"],
+		["others", "Others"]
+	];
+
 	function text(el, value) {
 		var node = document.createElement("span");
 		node.textContent = value;
 		el.appendChild(node);
 	}
 
+	function el(tag, cls, content) {
+		var e = document.createElement(tag);
+		if (cls) e.className = cls;
+		if (content) e.textContent = content;
+		return e;
+	}
+
+	function copyText(value, btn) {
+		var done = function () { btn.textContent = "Copied"; };
+		if (navigator.clipboard) {
+			navigator.clipboard.writeText(value).then(done, function () {});
+		}
+	}
+
+	// Tabs: the hash names the open one, so a reload keeps it.
+	function openTab(name) {
+		var found = false;
+		Array.prototype.forEach.call(document.querySelectorAll(".safegrd-panel"), function (p) {
+			var on = p.getAttribute("data-panel") === name;
+			p.hidden = !on;
+			found = found || on;
+		});
+		if (!found) return openTab("backups");
+		Array.prototype.forEach.call(document.querySelectorAll("#safegrd-tabs .nav-tab"), function (t) {
+			t.classList.toggle("nav-tab-active", t.getAttribute("data-tab") === name);
+		});
+		if (name === "logs") loadLogs();
+	}
+	Array.prototype.forEach.call(document.querySelectorAll("[data-tab], [data-tab-link]"), function (a) {
+		a.addEventListener("click", function (ev) {
+			ev.preventDefault();
+			var name = a.getAttribute("data-tab") || a.getAttribute("data-tab-link");
+			history.replaceState(null, "", "#" + name);
+			openTab(name);
+		});
+	});
+	openTab((location.hash || "#backups").slice(1));
+
+	var logKeys = {};
+
 	function renderSnapshots(list, error) {
 		var box = document.getElementById("safegrd-snapshots");
 		box.textContent = "";
 		if (error) {
-			var p = document.createElement("p");
-			p.className = "description";
-			p.textContent = "SafeGrd did not answer: " + error;
-			box.appendChild(p);
+			box.appendChild(el("p", "description", "SafeGrd did not answer: " + error));
 			return;
 		}
 		if (!list || !list.length) {
-			var none = document.createElement("p");
-			none.className = "description";
-			none.textContent = "None recorded yet.";
-			box.appendChild(none);
+			box.appendChild(el("p", "description", "None recorded yet."));
 			return;
 		}
-		var table = document.createElement("table");
-		table.className = "widefat striped";
+		var table = el("table", "widefat striped");
 		var head = table.createTHead().insertRow();
-		["Taken", "Kind", "Site size", "Uploaded", "Status", "Locked until"].forEach(function (h) {
-			var th = document.createElement("th");
-			th.textContent = h;
-			head.appendChild(th);
+		["Taken", "Kind", "Site size", "Uploaded", "Status", "Locked until", ""].forEach(function (h) {
+			head.appendChild(el("th", "", h));
 		});
 		var body = table.createTBody();
 		list.forEach(function (s) {
@@ -181,6 +220,18 @@
 			[s.created, s.kind, s.site, s.size, s.status, s.locked].forEach(function (v) {
 				text(row.insertCell(), v || "");
 			});
+			var cell = row.insertCell();
+			if (s.log) {
+				var a = el("a", "", "Log");
+				a.href = "#logs";
+				a.addEventListener("click", function (ev) {
+					ev.preventDefault();
+					history.replaceState(null, "", "#logs");
+					openTab("logs");
+					showLog(s.id);
+				});
+				cell.appendChild(a);
+			}
 			row.title = s.id;
 		});
 		box.appendChild(table);
@@ -189,8 +240,8 @@
 	// Hosted storage held against the plan, and the server's warning in
 	// its own words: refused, billed or in grace, from 80% of the plan.
 	function showStorage(line, warning, used, quota) {
-		var el = document.getElementById("safegrd-storage");
-		if (!el || !line) return;
+		var node = document.getElementById("safegrd-storage");
+		if (!node || !line) return;
 		var meter = document.getElementById("safegrd-meter");
 		if (meter && quota > 0) {
 			var pct = Math.min(100, used * 100 / quota);
@@ -198,12 +249,10 @@
 			meter.className = "safegrd-meter" + (pct >= 100 ? " is-full" : pct >= 80 ? " is-high" : "");
 			meter.hidden = false;
 		}
-		el.textContent = line + ".";
+		node.textContent = line + ".";
 		if (warning) {
-			var w = document.createElement("strong");
-			w.className = "safegrd-warn";
-			w.textContent = " " + warning;
-			el.appendChild(w);
+			var w = el("strong", "safegrd-warn", " " + warning);
+			node.appendChild(w);
 		}
 	}
 
@@ -222,20 +271,17 @@
 		return post("safegrd_status", local ? { local: "1" } : {}).then(function (s) {
 			document.getElementById("safegrd-last").innerHTML = s.last;
 			backupBtn.disabled = !!s.running;
+			showDownloads(s.downloads);
 			if (!local) {
 				if (s.drill) {
 					var drill = document.getElementById("safegrd-drill");
 					drill.textContent = s.drill;
 					if (s.drill_next) {
-						var next = document.createElement("span");
-						next.className = "description";
-						next.textContent = " " + s.drill_next + " ";
-						drill.appendChild(next);
-						var plans = document.createElement("a");
+						drill.appendChild(el("span", "description", " " + s.drill_next + " "));
+						var plans = el("a", "", "What each plan tests");
 						plans.href = cfg.server + "/pricing";
 						plans.target = "_blank";
 						plans.rel = "noopener";
-						plans.textContent = "What each plan tests";
 						drill.appendChild(plans);
 					}
 				}
@@ -273,29 +319,72 @@
 		});
 	});
 
-	var frequency = document.getElementById("safegrd-frequency");
-	if (frequency) {
-		frequency.addEventListener("change", function () {
-			frequency.disabled = true;
-			post("safegrd_set_frequency", { frequency: frequency.value }).then(function (r) {
+	// Settings: how often, from what hour, and what to leave out.
+	var save = document.getElementById("safegrd-save-settings");
+	if (save) {
+		save.addEventListener("click", function () {
+			save.disabled = true;
+			post("safegrd_save_settings", {
+				frequency: document.getElementById("safegrd-frequency").value,
+				hour: document.getElementById("safegrd-hour").value,
+				leave_out: document.getElementById("safegrd-exclude").value
+			}).then(function (r) {
 				document.getElementById("safegrd-next").textContent = r.next;
+				document.getElementById("safegrd-cadence").textContent = r.cadence;
+				document.getElementById("safegrd-exclude").value = r.leave_out;
 				notice("success", r.message);
-			}).catch(function (e) { notice("error", e.message); }).then(function () { frequency.disabled = false; });
+			}).catch(function (e) { notice("error", e.message); }).then(function () { save.disabled = false; });
 		});
 	}
 
 	var copy = document.getElementById("safegrd-copy-diagnostics");
 	if (copy) {
 		copy.addEventListener("click", function () {
-			var area = document.getElementById("safegrd-diagnostics");
-			area.select();
-			var done = function () { copy.textContent = "Copied"; };
-			if (navigator.clipboard) {
-				navigator.clipboard.writeText(area.value).then(done, function () { document.execCommand("copy"); done(); });
-			} else {
-				document.execCommand("copy");
-				done();
+			copyText(document.getElementById("safegrd-diagnostics").value, copy);
+		});
+	}
+
+	// Logs: the runs kept, and one run's lines.
+	function loadLogs() {
+		var box = document.getElementById("safegrd-logs");
+		post("safegrd_logs", {}).then(function (r) {
+			box.textContent = "";
+			logKeys = {};
+			if (!r.runs.length) {
+				box.appendChild(el("p", "description", "None yet. A backup, restore or download writes one."));
+				return;
 			}
+			var table = el("table", "widefat striped");
+			var head = table.createTHead().insertRow();
+			["Started", "What", "Of", "Outcome", ""].forEach(function (h) { head.appendChild(el("th", "", h)); });
+			var body = table.createTBody();
+			r.runs.forEach(function (run) {
+				logKeys[run.key] = true;
+				var row = body.insertRow();
+				[run.started, run.kind, run.label, run.status].forEach(function (v) { text(row.insertCell(), v); });
+				var a = el("a", "", "View");
+				a.href = "#logs";
+				a.addEventListener("click", function (ev) { ev.preventDefault(); showLog(run.key); });
+				row.insertCell().appendChild(a);
+			});
+			box.appendChild(table);
+		}).catch(function (e) { box.textContent = e.message; });
+	}
+
+	function showLog(key) {
+		var pre = document.getElementById("safegrd-log-text");
+		post("safegrd_logs", { key: key }).then(function (r) {
+			pre.textContent = r.text;
+			pre.hidden = false;
+			document.getElementById("safegrd-log-actions").hidden = false;
+			pre.scrollIntoView({ block: "nearest" });
+		}).catch(function (e) { notice("error", e.message); });
+	}
+
+	var copyLog = document.getElementById("safegrd-copy-log");
+	if (copyLog) {
+		copyLog.addEventListener("click", function () {
+			copyText(document.getElementById("safegrd-log-text").textContent, copyLog);
 		});
 	}
 
@@ -309,49 +398,94 @@
 		});
 	}
 
-	// Restore: the account's WordPress backups, each restorable onto this site.
+	// Restore and download: the account's WordPress backups. Restore takes
+	// all of a backup or the parts ticked; a download is one part.
 	function renderRestoreList(list) {
 		var box = document.getElementById("safegrd-restore-list");
 		box.textContent = "";
 		if (!list.length) {
-			var none = document.createElement("p");
-			none.className = "description";
-			none.textContent = "No WordPress backups in this account yet.";
-			box.appendChild(none);
+			box.appendChild(el("p", "description", "No WordPress backups in this account yet."));
 			return;
 		}
-		var table = document.createElement("table");
-		table.className = "widefat striped";
+		var table = el("table", "widefat striped safegrd-restore-table");
 		var head = table.createTHead().insertRow();
-		["Site", "Taken", "Contents", ""].forEach(function (h) {
-			var th = document.createElement("th");
-			th.textContent = h;
-			head.appendChild(th);
-		});
+		["Site", "Taken", "Contents", ""].forEach(function (h) { head.appendChild(el("th", "", h)); });
 		var body = table.createTBody();
 		list.forEach(function (s) {
 			var row = body.insertRow();
 			text(row.insertCell(), s.site);
 			text(row.insertCell(), s.taken);
 			text(row.insertCell(), s.tables + " tables, " + s.files + " files, " + s.size + (s.verified ? ", test-restored" : ""));
-			var btn = document.createElement("button");
+			var cell = row.insertCell();
+			cell.className = "safegrd-actions";
+			var btn = el("button", "button safegrd-restore-btn", "Restore...");
 			btn.type = "button";
-			btn.textContent = "Restore";
-			btn.className = "button safegrd-restore-btn";
 			btn.disabled = restoring;
-			btn.addEventListener("click", function () { startRestore(s); });
-			row.insertCell().appendChild(btn);
+			cell.appendChild(btn);
+			var dl = el("select", "safegrd-restore-btn");
+			dl.disabled = restoring;
+			dl.setAttribute("aria-label", "Download a part of this backup");
+			var first = el("option", "", "Download...");
+			first.value = "";
+			dl.appendChild(first);
+			PARTS.forEach(function (p) {
+				var o = el("option", "", p[1]);
+				o.value = p[0];
+				dl.appendChild(o);
+			});
+			dl.addEventListener("change", function () {
+				if (!dl.value) return;
+				var part = dl.value;
+				dl.value = "";
+				startDownload(s, part);
+			});
+			cell.appendChild(dl);
+
+			// The parts picker, under the row while it is open.
+			var pick = body.insertRow();
+			pick.hidden = true;
+			var pc = pick.insertCell();
+			pc.colSpan = 4;
+			var fs = el("fieldset", "safegrd-parts");
+			fs.appendChild(el("legend", "", "Restore these parts of the backup onto this site"));
+			PARTS.forEach(function (p) {
+				var label = el("label");
+				var box = document.createElement("input");
+				box.type = "checkbox";
+				box.value = p[0];
+				box.checked = true;
+				label.appendChild(box);
+				label.appendChild(document.createTextNode(" " + p[1]));
+				fs.appendChild(label);
+			});
+			pc.appendChild(fs);
+			pc.appendChild(el("p", "description", "Others is the rest of wp-content: mu-plugins, languages and what plugins keep there. Without the database, the site keeps its own content, settings and sign-in."));
+			var go = el("button", "button button-primary safegrd-restore-btn", "Restore");
+			go.type = "button";
+			go.addEventListener("click", function () {
+				var parts = Array.prototype.filter.call(fs.querySelectorAll("input"), function (b) { return b.checked; }).map(function (b) { return b.value; });
+				if (!parts.length) {
+					notice("error", "Choose at least one part to restore.");
+					return;
+				}
+				startRestore(s, parts);
+			});
+			pc.appendChild(go);
+			btn.addEventListener("click", function () { pick.hidden = !pick.hidden; });
 		});
 		box.appendChild(table);
 	}
 
-	function startRestore(s) {
-		var msg = "Restore the backup of " + s.site + " taken " + s.taken + " onto this site?\n\n" +
-			"This site's database and content directory are replaced. The current ones are kept aside until you delete them.\n\n" +
-			"Afterwards this site's users are the backup's: sign in with an administrator account of the restored site.";
+	function startRestore(s, parts) {
+		var all = parts.length === PARTS.length;
+		var db = parts.indexOf("database") >= 0;
+		var msg = "Restore " + (all ? "the backup" : parts.join(", ") + " from the backup") + " of " + s.site + " taken " + s.taken + " onto this site?\n\n" +
+			(all ? "This site's database and content directory are replaced." : "This site's " + parts.join(", ") + " are replaced.") +
+			" What they replace is kept aside until you delete it." +
+			(db ? "\n\nAfterwards this site's users are the backup's: sign in with an administrator account of the restored site." : "");
 		if (!window.confirm(msg)) return;
 		setRestoring(true);
-		post("safegrd_restore_start", { snapshot: s.id }).then(function () {
+		post("safegrd_restore_start", { snapshot: s.id, parts: parts.join(",") }).then(function () {
 			watchRestore(500);
 		}).catch(function (e) {
 			setRestoring(false);
@@ -359,8 +493,32 @@
 		});
 	}
 
-	// While a restore runs, its progress is the notice at the top of the
-	// page, and no other restore can start.
+	function startDownload(s, part) {
+		setRestoring(true);
+		post("safegrd_download_start", { snapshot: s.id, part: part }).then(function (r) {
+			notice("info", r.message);
+			watchRestore(500);
+		}).catch(function (e) {
+			setRestoring(false);
+			notice("error", e.message);
+		});
+	}
+
+	function showDownloads(html) {
+		var box = document.getElementById("safegrd-downloads");
+		if (!box || html === undefined) return;
+		box.innerHTML = html;
+		Array.prototype.forEach.call(box.querySelectorAll(".safegrd-delete-download"), function (b) {
+			b.addEventListener("click", function () {
+				post("safegrd_download_delete", { id: b.getAttribute("data-id") }).then(function (r) { showDownloads(r.downloads); })
+					.catch(function (e) { notice("error", e.message); });
+			});
+		});
+	}
+	showDownloads(document.getElementById("safegrd-downloads") ? document.getElementById("safegrd-downloads").innerHTML : undefined);
+
+	// While a restore or a download runs, its progress is the notice at the
+	// top of the page, and no other can start.
 	var restoring = !document.getElementById("safegrd-restore-progress").hidden;
 
 	function setRestoring(on) {
@@ -380,6 +538,7 @@
 				showProgress(s.progress);
 				setRestoring(!!s.restoring);
 				document.getElementById("safegrd-restore-state").innerHTML = s.restore;
+				showDownloads(s.downloads);
 				bindDeleteCopy();
 				if (s.restoring) {
 					setTimeout(tick, 4000);

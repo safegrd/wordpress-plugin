@@ -20,7 +20,11 @@ final class SafeGrd_Admin {
 		add_action( 'wp_ajax_safegrd_connect_token', array( __CLASS__, 'ajax_connect_token' ) );
 		add_action( 'wp_ajax_safegrd_connect_org', array( __CLASS__, 'ajax_connect_org' ) );
 		add_action( 'wp_ajax_safegrd_backup_now', array( __CLASS__, 'ajax_backup_now' ) );
-		add_action( 'wp_ajax_safegrd_set_frequency', array( __CLASS__, 'ajax_set_frequency' ) );
+		add_action( 'wp_ajax_safegrd_save_settings', array( __CLASS__, 'ajax_save_settings' ) );
+		add_action( 'wp_ajax_safegrd_download_start', array( __CLASS__, 'ajax_download_start' ) );
+		add_action( 'wp_ajax_safegrd_download_delete', array( __CLASS__, 'ajax_download_delete' ) );
+		add_action( 'wp_ajax_safegrd_logs', array( __CLASS__, 'ajax_logs' ) );
+		add_action( 'admin_post_safegrd_download', array( __CLASS__, 'serve_download' ) );
 		add_action( 'wp_ajax_safegrd_tick', array( __CLASS__, 'ajax_tick' ) );
 		add_action( 'wp_ajax_safegrd_status', array( __CLASS__, 'ajax_status' ) );
 		add_action( 'wp_ajax_safegrd_disconnect', array( __CLASS__, 'ajax_disconnect' ) );
@@ -155,69 +159,165 @@ final class SafeGrd_Admin {
 		$run     = SafeGrd_Settings::last_run();
 		$custody = SafeGrd_Settings::get( 'key_custody' );
 		$next    = SafeGrd_Scheduler::next_run();
+		$hour    = SafeGrd_Scheduler::hour();
+		$tabs    = array(
+			'backups'  => 'Backups',
+			'restore'  => 'Restore & download',
+			'settings' => 'Settings',
+			'logs'     => 'Logs',
+			'help'     => 'Help',
+		);
 		?>
-		<div class="safegrd-grid" id="safegrd-status">
+		<nav class="nav-tab-wrapper safegrd-tabs" id="safegrd-tabs">
+			<?php foreach ( $tabs as $id => $label ) : ?>
+				<a href="#<?php echo esc_attr( $id ); ?>" class="nav-tab<?php echo 'backups' === $id ? ' nav-tab-active' : ''; ?>" data-tab="<?php echo esc_attr( $id ); ?>"><?php echo esc_html( $label ); ?></a>
+			<?php endforeach; ?>
+		</nav>
+
+		<div class="safegrd-panel" data-panel="backups" id="safegrd-status">
+			<div class="safegrd-grid">
+				<div class="safegrd-card">
+					<h2>Backups</h2>
+					<table class="form-table" role="presentation">
+						<tr><th scope="row">Last backup</th><td id="safegrd-last"><?php echo wp_kses_post( self::describe_run( $run ) ); ?></td></tr>
+						<tr><th scope="row">Next backup</th><td>
+							<span id="safegrd-next"><?php echo esc_html( $next ? wp_date( 'Y-m-d H:i', $next ) : 'Not scheduled' ); ?></span>
+							<span class="description" id="safegrd-cadence"><?php echo esc_html( self::describe_cadence() ); ?></span>
+							<a href="#settings" data-tab-link="settings">Change</a>
+						</td></tr>
+						<tr><th scope="row">Last test restore</th><td id="safegrd-drill">Asking SafeGrd...</td></tr>
+					</table>
+					<p>
+						<button type="button" class="button button-primary" id="safegrd-backup-btn" <?php disabled( SafeGrd_Backup::running() ); ?>>Back up now</button>
+						<a class="button" href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/dashboard' ); ?>" target="_blank" rel="noopener">Open SafeGrd</a>
+					</p>
+				</div>
+				<div class="safegrd-card">
+					<h2>Storage</h2>
+					<div class="safegrd-meter" id="safegrd-meter" hidden><span></span></div>
+					<p id="safegrd-storage">Asking SafeGrd...</p>
+					<p class="description">SafeGrd hosted storage, locked against deletion: Object Lock in compliance mode keeps each backup until its date, and no one can delete it sooner.</p>
+					<p>
+						<?php if ( 'safegrd' === $custody ) : ?>
+							<strong>SafeGrd-managed key.</strong> SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
+						<?php else : ?>
+							<strong>Customer-managed key.</strong> Only you can decrypt these backups.
+						<?php endif; ?>
+					</p>
+				</div>
+			</div>
 			<div class="safegrd-card">
-				<h2>Backups</h2>
+				<h2>Recent backups</h2>
+				<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. Every backup is still a full restore point.</p>
+				<div id="safegrd-snapshots"><p class="description">Asking SafeGrd...</p></div>
+			</div>
+		</div>
+
+		<div class="safegrd-panel" data-panel="restore" hidden>
+			<div class="safegrd-card">
+				<h2>Restore, migrate or download</h2>
+				<p>Restore any WordPress backup in this account onto this site, all of it or only some parts: the database, plugins, themes, uploads, and the rest of wp-content. What a restore replaces is kept aside until you delete it. <code>wp-config.php</code> stays this site's own.</p>
+				<p class="description">To migrate a site to a new host or domain, install WordPress and this plugin there, connect it to the same SafeGrd account, and restore the old site's backup with its database. The restore runs a search and replace from the old URL to the new one, serialized data included, and renames the tables to the new site's table prefix.</p>
+				<p class="description">Plugin and theme settings are in the database: restoring plugins alone brings back their files, not their settings.</p>
+				<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
+				<div id="safegrd-restore-list"><p class="description">Asking SafeGrd...</p></div>
+				<p class="description">A backup taken with a customer-managed key restores and downloads with the safegrd command line tool and that key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
+			</div>
+			<div class="safegrd-card">
+				<h2>Downloads</h2>
+				<p class="description">A download is written on this server, decrypted, then fetched from this page. It is deleted from the server a day after it is written. The database is a gzipped SQL dump; files are a gzipped tar.</p>
+				<div id="safegrd-downloads"><?php echo wp_kses_post( self::describe_downloads() ); ?></div>
+			</div>
+		</div>
+
+		<div class="safegrd-panel" data-panel="settings" hidden>
+			<div class="safegrd-card">
+				<h2>Schedule</h2>
 				<table class="form-table" role="presentation">
-					<tr><th scope="row">Last backup</th><td id="safegrd-last"><?php echo wp_kses_post( self::describe_run( $run ) ); ?></td></tr>
-					<tr><th scope="row">Next backup</th><td>
-						<span id="safegrd-next"><?php echo esc_html( $next ? wp_date( 'Y-m-d H:i', $next ) : 'Not scheduled' ); ?></span>
-						<label for="safegrd-frequency" class="screen-reader-text">How often</label>
+					<tr><th scope="row"><label for="safegrd-frequency">How often</label></th><td>
 						<select id="safegrd-frequency">
 							<?php foreach ( array( 'daily' => 'Daily', 'weekly' => 'Weekly' ) as $value => $label ) : ?>
 								<option value="<?php echo esc_attr( $value ); ?>" <?php selected( SafeGrd_Scheduler::frequency(), $value ); ?>><?php echo esc_html( $label ); ?></option>
 							<?php endforeach; ?>
 						</select>
 					</td></tr>
-					<tr><th scope="row">Last test restore</th><td id="safegrd-drill">Asking SafeGrd...</td></tr>
+					<tr><th scope="row"><label for="safegrd-hour">Start at</label></th><td>
+						<select id="safegrd-hour">
+							<option value="-1" <?php selected( $hour, -1 ); ?>>Any time</option>
+							<?php for ( $h = 0; $h < 24; $h++ ) : ?>
+								<option value="<?php echo esc_attr( (string) $h ); ?>" <?php selected( $hour, $h ); ?>><?php echo esc_html( sprintf( '%02d:00', $h ) ); ?></option>
+							<?php endfor; ?>
+						</select>
+						<p class="description">In the site's timezone, <?php echo esc_html( wp_timezone_string() ); ?>. WP-Cron starts the backup at the first visit to the site after this time, so a quiet site may start later.</p>
+					</td></tr>
 				</table>
-				<p>
-					<button type="button" class="button button-primary" id="safegrd-backup-btn" <?php disabled( SafeGrd_Backup::running() ); ?>>Back up now</button>
-					<a class="button" href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/dashboard' ); ?>" target="_blank" rel="noopener">Open SafeGrd</a>
-				</p>
 			</div>
 			<div class="safegrd-card">
-				<h2>Storage</h2>
-				<div class="safegrd-meter" id="safegrd-meter" hidden><span></span></div>
-				<p id="safegrd-storage">Asking SafeGrd...</p>
-				<p class="description">SafeGrd hosted storage, locked against deletion: Object Lock in compliance mode keeps each backup until its date, and no one can delete it sooner.</p>
-				<p>
-					<?php if ( 'safegrd' === $custody ) : ?>
-						<strong>SafeGrd-managed key.</strong> SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
-					<?php else : ?>
-						<strong>Customer-managed key.</strong> Only you can decrypt these backups.
-					<?php endif; ?>
-				</p>
+				<h2>Leave out of backups</h2>
+				<p class="description">One per line. A path from the site root leaves out everything under it, such as <code><?php echo esc_html( SafeGrd_Site::content_path() ); ?>/ewww</code>. A name leaves out files and directories of that name anywhere but uploads, such as <code>*.zip</code> or <code>node_modules</code>. Uploads stay in every backup: the test restore checks that every attachment the database names is there.</p>
+				<p class="description">Already left out: caches, the upgrade directory, debug.log, and other backup plugins' archives.</p>
+				<textarea id="safegrd-exclude" rows="5" class="large-text code" spellcheck="false"><?php echo esc_textarea( implode( "\n", (array) SafeGrd_Settings::get( 'leave_out', array() ) ) ); ?></textarea>
+			</div>
+			<p><button type="button" class="button button-primary" id="safegrd-save-settings">Save settings</button></p>
+		</div>
+
+		<div class="safegrd-panel" data-panel="logs" hidden>
+			<div class="safegrd-card">
+				<h2>Logs</h2>
+				<p class="description">What the last <?php echo esc_html( (string) SafeGrd_Log::RUNS ); ?> backups, restores and downloads on this site printed. Support asks for these.</p>
+				<div id="safegrd-logs"></div>
+				<pre class="safegrd-log" id="safegrd-log-text" hidden></pre>
+				<p id="safegrd-log-actions" hidden><button type="button" class="button" id="safegrd-copy-log">Copy log</button></p>
 			</div>
 		</div>
-		<div class="safegrd-card">
-			<h2>Recent backups</h2>
-			<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. Every backup is still a full restore point.</p>
-			<div id="safegrd-snapshots"><p class="description">Asking SafeGrd...</p></div>
+
+		<div class="safegrd-panel" data-panel="help" hidden>
+			<div class="safegrd-card">
+				<h2>Help</h2>
+				<p>
+					<a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress' ); ?>" target="_blank" rel="noopener">WordPress guide</a>
+					&middot; <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/contact' ); ?>" target="_blank" rel="noopener">Contact support</a>
+					&middot; <a href="mailto:support@safegrd.dev">support@safegrd.dev</a>
+				</p>
+				<p>Email and Slack alerts for a failed backup or test restore are set in the SafeGrd console, under <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/dashboard#settings' ); ?>" target="_blank" rel="noopener">Settings, Alerts</a>.</p>
+				<p class="description">Support asks for these first. They hold no token or key.</p>
+				<textarea readonly rows="6" class="large-text code" id="safegrd-diagnostics"><?php echo esc_textarea( self::diagnostics() ); ?></textarea>
+				<p><button type="button" class="button" id="safegrd-copy-diagnostics">Copy diagnostics</button></p>
+			</div>
+			<p class="description">Node <?php echo esc_html( SafeGrd_Settings::get( 'node_id' ) ); ?> on <?php echo esc_html( SafeGrd_Settings::server_url() ); ?>.
+				<a href="#" id="safegrd-disconnect">Disconnect this site</a>. Backups already taken stay in SafeGrd.</p>
 		</div>
-		<div class="safegrd-card">
-			<h2>Restore or move a site</h2>
-			<p>Restore any WordPress site's backup in this account onto this site: a new install, or this site as it was. This site's database and content directory are replaced, and the ones it had are kept aside until you delete them. <code>wp-config.php</code> stays this site's own.</p>
-			<p class="description">To migrate a site to a new host or domain, install WordPress and this plugin there, connect it to the same SafeGrd account, and restore the old site's backup. The restore runs a search and replace from the old URL to the new one, serialized data included, and renames the tables to the new site's table prefix.</p>
-			<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
-			<div id="safegrd-restore-list"><p class="description">Asking SafeGrd...</p></div>
-			<p class="description">A backup taken with a customer-managed key restores with the safegrd command line tool and that key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
-		</div>
-		<div class="safegrd-card">
-			<h2>Help</h2>
-			<p>
-				<a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress' ); ?>" target="_blank" rel="noopener">WordPress guide</a>
-				&middot; <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/contact' ); ?>" target="_blank" rel="noopener">Contact support</a>
-				&middot; <a href="mailto:support@safegrd.dev">support@safegrd.dev</a>
-			</p>
-			<p class="description">Support asks for these first. They hold no token or key.</p>
-			<textarea readonly rows="6" class="large-text code" id="safegrd-diagnostics"><?php echo esc_textarea( self::diagnostics() ); ?></textarea>
-			<p><button type="button" class="button" id="safegrd-copy-diagnostics">Copy diagnostics</button></p>
-		</div>
-		<p class="description">Node <?php echo esc_html( SafeGrd_Settings::get( 'node_id' ) ); ?> on <?php echo esc_html( SafeGrd_Settings::server_url() ); ?>.
-			<a href="#" id="safegrd-disconnect">Disconnect this site</a>. Backups already taken stay in SafeGrd.</p>
 		<?php
+	}
+
+	/** How often and when backups run, in words. */
+	public static function describe_cadence() {
+		$h = SafeGrd_Scheduler::hour();
+		$f = 'weekly' === SafeGrd_Scheduler::frequency() ? 'Weekly' : 'Daily';
+		return $h >= 0 ? sprintf( '%s, from %02d:00', $f, $h ) : $f;
+	}
+
+	/** The downloads still on the server, in HTML, each with its link. */
+	public static function describe_downloads() {
+		$list   = SafeGrd_Restore::downloads();
+		$failed = get_option( 'safegrd_download_failed', array() );
+		$s      = '';
+		if ( ! empty( $failed['message'] ) && (int) $failed['at'] > time() - DAY_IN_SECONDS ) {
+			$s .= '<p class="safegrd-warn"><strong>The download of the ' . esc_html( $failed['component'] ) . ' of ' . esc_html( $failed['snapshot_id'] ) . ' failed:</strong> ' . esc_html( $failed['message'] ) . '</p>';
+		}
+		if ( ! $list ) {
+			return $s . '<p class="description">None. Choose a part of a backup under Restore, migrate or download.</p>';
+		}
+		$s .= '<table class="widefat striped"><thead><tr><th>File</th><th>Of</th><th>Size</th><th>Deleted</th><th></th></tr></thead><tbody>';
+		foreach ( $list as $id => $d ) {
+			$url = wp_nonce_url( admin_url( 'admin-post.php?action=safegrd_download&id=' . $id ), 'safegrd_download_' . $id );
+			$s  .= '<tr><td><a href="' . esc_url( $url ) . '">' . esc_html( $d['name'] ) . '</a></td>'
+				. '<td>' . esc_html( $d['source_url'] . ', ' . self::when( $d['taken_at'] ) ) . '</td>'
+				. '<td>' . esc_html( size_format( (int) $d['bytes'], 1 ) ) . '</td>'
+				. '<td>' . esc_html( wp_date( 'Y-m-d H:i', (int) $d['expires'] ) ) . '</td>'
+				. '<td><a class="button" href="' . esc_url( $url ) . '">Download</a> <button type="button" class="button-link safegrd-delete-download" data-id="' . esc_attr( $id ) . '">Delete</button></td></tr>';
+		}
+		return $s . '</tbody></table>';
 	}
 
 	/**
@@ -274,12 +374,19 @@ final class SafeGrd_Admin {
 			'swap'     => 'Swapping the restored site in.',
 			'done'     => 'Finishing.',
 		);
-		$started = (int) ( $job['started'] ?? 0 );
-		$taken   = empty( $job['taken_at'] ) ? '' : ' (taken ' . self::when( $job['taken_at'] ) . ')';
-		$s       = '<p><strong>Restoring ' . esc_html( $job['snapshot_id'] . $taken ) . '.</strong> ' . esc_html( $stages[ $job['stage'] ] ?? $job['stage'] ) . '</p>';
-		$s      .= '<p>' . esc_html(
+		$started  = (int) ( $job['started'] ?? 0 );
+		$taken    = empty( $job['taken_at'] ) ? '' : ' (taken ' . self::when( $job['taken_at'] ) . ')';
+		$download = 'download' === ( $job['mode'] ?? 'restore' );
+		if ( $download ) {
+			$stages['database'] = sprintf( 'Writing the database dump: part %d of %d.', min( (int) ( $job['seq'] ?? 0 ) + 1, max( 1, $parts ) ), max( 1, $parts ) );
+			$stages['files']    = sprintf( 'Writing the files: %d of %d, %s so far.', (int) $job['files'], (int) ( $job['total_files'] ?? 0 ), size_format( (int) ( $job['bytes'] ?? 0 ), 1 ) );
+		}
+		$parts_of = (array) ( $job['components'] ?? SafeGrd_Site::COMPONENTS );
+		$what     = count( $parts_of ) < count( SafeGrd_Site::COMPONENTS ) ? ' (' . implode( ', ', $parts_of ) . ')' : '';
+		$s        = '<p><strong>' . ( $download ? 'Writing a download of ' : 'Restoring ' ) . esc_html( $job['snapshot_id'] . $what . $taken ) . '.</strong> ' . esc_html( $stages[ $job['stage'] ] ?? $job['stage'] ) . '</p>';
+		$s       .= '<p>' . esc_html(
 			sprintf(
-				'Started %s, %s ago, in %d slices so far. The site runs as it is until the swap. This page refreshes periodically.',
+				$download ? 'Started %s, %s ago, in %d slices so far. This page refreshes periodically.' : 'Started %s, %s ago, in %d slices so far. The site runs as it is until the swap. This page refreshes periodically.',
 				wp_date( 'H:i', $started ),
 				human_time_diff( $started ),
 				(int) ( $job['slices'] ?? 0 )
@@ -294,7 +401,7 @@ final class SafeGrd_Admin {
 	 */
 	public static function describe_restore() {
 		if ( SafeGrd_Restore::job() ) {
-			return '<p>A restore is under way. Its progress is at the top of this page.</p>';
+			return '<p>' . ( 'download' === ( SafeGrd_Restore::job()['mode'] ?? '' ) ? 'A download is being written.' : 'A restore is under way.' ) . ' Its progress is at the top of this page.</p>';
 		}
 		$last = get_option( SafeGrd_Restore::LAST, array() );
 		if ( ! $last ) {
@@ -303,9 +410,11 @@ final class SafeGrd_Admin {
 		if ( ! empty( $last['failed'] ) ) {
 			return '<p class="safegrd-warn"><strong>The restore of ' . esc_html( $last['snapshot_id'] ) . ' failed:</strong> ' . esc_html( $last['failed'] ) . '</p>';
 		}
-		$s = sprintf(
-			'<p><strong>Restored %s</strong> of %s on %s: %d tables, %d rows, %d files.</p>',
+		$only = (array) ( $last['components'] ?? SafeGrd_Site::COMPONENTS );
+		$s    = sprintf(
+			'<p><strong>Restored %s%s</strong> of %s on %s: %d tables, %d rows, %d files.</p>',
 			esc_html( $last['snapshot_id'] ),
+			esc_html( count( $only ) < count( SafeGrd_Site::COMPONENTS ) ? ' (' . implode( ', ', $only ) . ')' : '' ),
 			esc_html( $last['source_url'] ),
 			esc_html( self::when( $last['restored_at'] ) ),
 			(int) $last['tables'],
@@ -537,18 +646,29 @@ final class SafeGrd_Admin {
 		wp_send_json_success( array( 'status' => $run['status'] ?? '' ) );
 	}
 
-	public static function ajax_set_frequency() {
+	public static function ajax_save_settings() {
 		self::guard();
-		$f = isset( $_POST['frequency'] ) ? sanitize_key( wp_unslash( $_POST['frequency'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
-		if ( ! SafeGrd_Scheduler::set_frequency( $f ) ) {
-			wp_send_json_error( array( 'message' => 'Choose daily or weekly.' ) );
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		$f    = isset( $_POST['frequency'] ) ? sanitize_key( wp_unslash( $_POST['frequency'] ) ) : '';
+		$hour = isset( $_POST['hour'] ) ? (int) $_POST['hour'] : -1;
+		$text = isset( $_POST['leave_out'] ) ? sanitize_textarea_field( wp_unslash( $_POST['leave_out'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		$exclude = SafeGrd_Site::check_exclusions( $text );
+		if ( is_wp_error( $exclude ) ) {
+			wp_send_json_error( array( 'message' => $exclude->get_error_message() ) );
 		}
+		if ( ! SafeGrd_Scheduler::set_frequency( $f, $hour ) ) {
+			wp_send_json_error( array( 'message' => 'Choose daily or weekly, and an hour from 00:00 to 23:00.' ) );
+		}
+		SafeGrd_Settings::update( array( 'leave_out' => $exclude ) );
 		SafeGrd_Backup::report_schedule();
 		$next = SafeGrd_Scheduler::next_run();
 		wp_send_json_success(
 			array(
 				'next'    => wp_date( 'Y-m-d H:i', $next ),
-				'message' => sprintf( 'Backs up %s from now on. The next is due %s.', $f, wp_date( 'Y-m-d H:i', $next ) ),
+				'cadence' => self::describe_cadence(),
+				'leave_out' => implode( "\n", $exclude ),
+				'message' => sprintf( 'Saved. Backs up %s. The next is due %s.', strtolower( self::describe_cadence() ), wp_date( 'Y-m-d H:i', $next ) ),
 			)
 		);
 	}
@@ -573,12 +693,15 @@ final class SafeGrd_Admin {
 			'last'      => self::describe_run( SafeGrd_Settings::last_run() ),
 			'restore'   => self::describe_restore(),
 			'progress'  => self::describe_restore_progress(),
+			'downloads' => self::describe_downloads(),
+			'cadence'   => self::describe_cadence(),
 		);
 		if ( SafeGrd_Settings::connected() && empty( $_POST['local'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 			$client = SafeGrd_Client::for_site();
 			$node   = rawurlencode( SafeGrd_Settings::get( 'node_id' ) );
 			$snaps  = $client->call( 'GET', '/api/v1/snapshots?node_id=' . $node . '&limit=5', null, 15 );
 			if ( ! is_wp_error( $snaps ) ) {
+				$logs             = SafeGrd_Log::all();
 				$out['snapshots'] = array();
 				foreach ( ( isset( $snaps['items'] ) ? $snaps['items'] : $snaps ) as $s ) {
 					$out['snapshots'][] = array(
@@ -589,6 +712,7 @@ final class SafeGrd_Admin {
 						'site'    => size_format( (int) ( $s['raw_size_bytes'] ?? 0 ), 1 ),
 						'kind'    => 'opening' === ( $s['object_class'] ?? '' ) ? 'Full, the month\'s first' : ( 'later' === ( $s['object_class'] ?? '' ) ? 'Changes only' : '' ),
 						'locked'  => substr( (string) ( $s['worm_retention_until'] ?? '' ), 0, 10 ),
+						'log'     => isset( $logs[ $s['snapshot_id'] ?? '' ] ),
 					);
 				}
 			} else {
@@ -639,13 +763,90 @@ final class SafeGrd_Admin {
 
 	public static function ajax_restore_start() {
 		self::guard();
-		$id = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
-		$ok = SafeGrd_Restore::begin( $id );
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		$id    = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : '';
+		$parts = isset( $_POST['parts'] ) ? array_map( 'sanitize_key', explode( ',', sanitize_text_field( wp_unslash( $_POST['parts'] ) ) ) ) : null;
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		$ok = SafeGrd_Restore::begin( $id, $parts );
 		if ( is_wp_error( $ok ) ) {
 			wp_send_json_error( array( 'message' => $ok->get_error_message() ) );
 		}
 		SafeGrd_Scheduler::continue_now();
 		wp_send_json_success( array( 'message' => 'Restore started. The site runs as it is until the restored one is swapped in.' ) );
+	}
+
+	public static function ajax_download_start() {
+		self::guard();
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		$id   = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : '';
+		$part = isset( $_POST['part'] ) ? sanitize_key( wp_unslash( $_POST['part'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		$ok = SafeGrd_Restore::begin( $id, array( $part ), 'download' );
+		if ( is_wp_error( $ok ) ) {
+			wp_send_json_error( array( 'message' => $ok->get_error_message() ) );
+		}
+		delete_option( 'safegrd_download_failed' );
+		SafeGrd_Scheduler::continue_now();
+		wp_send_json_success( array( 'message' => 'Writing the download. It is listed under Downloads when it is ready.' ) );
+	}
+
+	public static function ajax_download_delete() {
+		self::guard();
+		SafeGrd_Restore::delete_download( isset( $_POST['id'] ) ? sanitize_key( wp_unslash( $_POST['id'] ) ) : '' ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		wp_send_json_success( array( 'downloads' => self::describe_downloads() ) );
+	}
+
+	/** The runs whose logs are kept, or one run's log as text. */
+	public static function ajax_logs() {
+		self::guard();
+		$key = isset( $_POST['key'] ) ? sanitize_text_field( wp_unslash( $_POST['key'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		if ( '' !== $key ) {
+			$text = SafeGrd_Log::text( $key );
+			if ( '' === $text ) {
+				wp_send_json_error( array( 'message' => 'That log is no longer kept.' ) );
+			}
+			wp_send_json_success( array( 'text' => $text ) );
+		}
+		$out = array();
+		foreach ( SafeGrd_Log::all() as $k => $r ) {
+			$out[] = array(
+				'key'     => (string) $k,
+				'kind'    => ucfirst( $r['kind'] ),
+				'label'   => $r['label'],
+				'status'  => $r['status'],
+				'started' => wp_date( 'Y-m-d H:i', (int) $r['started'] ),
+				'lines'   => count( $r['lines'] ),
+			);
+		}
+		wp_send_json_success( array( 'runs' => $out ) );
+	}
+
+	/**
+	 * Sends a download's file, to an administrator with the link's nonce.
+	 * The id names the download; its path comes from the plugin's record.
+	 */
+	public static function serve_download() {
+		$id = isset( $_GET['id'] ) ? sanitize_key( wp_unslash( $_GET['id'] ) ) : '';
+		if ( ! current_user_can( 'manage_options' ) || ! wp_verify_nonce( isset( $_GET['_wpnonce'] ) ? sanitize_key( wp_unslash( $_GET['_wpnonce'] ) ) : '', 'safegrd_download_' . $id ) ) {
+			wp_die( esc_html( 'Only an administrator can download backups, from Tools, SafeGrd.' ), '', array( 'response' => 403 ) );
+		}
+		$file = SafeGrd_Restore::download_file( $id );
+		if ( null === $file ) {
+			wp_die( esc_html( 'This download is no longer on the server. Write it again from Tools, SafeGrd.' ), '', array( 'response' => 404 ) );
+		}
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 0 ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged, WordPress.PHP.NoSilencedErrors.Discouraged -- a large file takes as long as the connection needs; some hosts disable the function.
+		}
+		while ( ob_get_level() ) {
+			ob_end_clean();
+		}
+		nocache_headers();
+		header( 'Content-Type: application/gzip' );
+		header( 'Content-Disposition: attachment; filename="' . str_replace( '"', '', $file['name'] ) . '"' );
+		header( 'Content-Length: ' . filesize( $file['path'] ) );
+		header( 'X-Content-Type-Options: nosniff' );
+		readfile( $file['path'] ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_readfile -- streams the plugin's own file to an administrator.
+		exit;
 	}
 
 	public static function ajax_restore_delete_copy() {

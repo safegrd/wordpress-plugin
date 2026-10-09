@@ -79,11 +79,27 @@ and confirm. The same page restores a site over itself.
   table prefix.
 - Afterwards the site's users are the backup's: sign in with an administrator account of the
   restored site.
+- Tick only some parts to restore those: the database, plugins, themes, uploads, and *others*
+  (the rest of wp-content). Without the database the site keeps its content, settings and
+  sign-in. This plugin always stays the version running.
 
 ```sh
 wp safegrd snapshots
 wp safegrd restore snap-... --yes
+wp safegrd restore snap-... --only=plugins,themes --yes
 wp safegrd restore --delete-copy
+```
+
+## Download
+
+*Restore & download* writes one part of a backup to a file on the server, decrypted: the
+database as a gzipped SQL dump, or plugins, themes, uploads or others as a gzipped tar (others
+carries `wp-config.php` and `.htaccess` too). The file is fetched from wp-admin by an
+administrator and deleted from the server a day later.
+
+```sh
+wp safegrd download snap-... database --to=site.sql.gz
+wp safegrd download snap-... uploads --to=uploads.tar.gz
 ```
 
 The plugin restores backups taken with a SafeGrd-managed key. For a customer-managed key, use the

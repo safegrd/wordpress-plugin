@@ -238,6 +238,8 @@ final class SafeGrd_Backup {
 			'new_bytes'   => 0,
 			'new_packs'   => 0,
 			'skipped'     => array(),
+			'leave_out'   => (array) SafeGrd_Settings::get( 'leave_out', array() ),
+			'excluded'    => array(),
 			'db'          => null,
 			'slices'      => 0,
 		);
@@ -574,6 +576,13 @@ final class SafeGrd_Backup {
 				$this->job['skipped'][] = substr( $child, 6 ) . ' (a symlink)';
 				continue;
 			}
+			if ( ! empty( $this->job['leave_out'] ) ) {
+				$hit = SafeGrd_Site::excluded_by( substr( $child, 6 ), $this->job['leave_out'] );
+				if ( '' !== $hit ) {
+					$this->job['excluded'][ $hit ] = ( $this->job['excluded'][ $hit ] ?? 0 ) + 1;
+					continue;
+				}
+			}
 			if ( is_dir( $full ) ) {
 				if ( $dir === $content_root && ( in_array( $name, self::EXCLUDE_DIRS, true ) || 0 === strpos( $name, 'safegrd-' ) ) ) {
 					continue; // caches, other plugins' backups, a restore's staging and kept copy
@@ -685,6 +694,10 @@ final class SafeGrd_Backup {
 			$this->say( sprintf( 'Finishing again as %s', $this->job['snapshot_id'] ) );
 		}
 		$this->job['finishing'] = true;
+		foreach ( (array) ( $this->job['excluded'] ?? array() ) as $pattern => $n ) {
+			$this->job['skipped'][] = sprintf( '%s (left out in settings: %d %s)', $pattern, $n, 1 === $n ? 'match' : 'matches' );
+		}
+		$this->job['excluded'] = array();
 		$this->save_job();
 		$job = $this->job;
 		$this->say( 'Writing the snapshot' );

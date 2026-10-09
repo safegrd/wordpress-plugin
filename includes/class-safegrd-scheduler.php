@@ -66,20 +66,34 @@ final class SafeGrd_Scheduler {
 	}
 
 	/**
-	 * Sets how often backups run. The next is due one new interval after
-	 * the last backup, or at once when that has passed.
-	 *
-	 * @return bool False for a frequency the plugin does not offer.
+	 * The hour of the day backups start at, in the site's timezone, or -1
+	 * for whenever the last one did.
 	 */
-	public static function set_frequency( $frequency ) {
-		if ( ! isset( self::FREQUENCIES[ $frequency ] ) ) {
+	public static function hour() {
+		$h = SafeGrd_Settings::get( 'hour', -1 );
+		return is_numeric( $h ) && (int) $h >= 0 && (int) $h <= 23 ? (int) $h : -1;
+	}
+
+	/**
+	 * Sets how often backups run, and at what hour. The next is due one
+	 * interval after the last backup, or at once when that has passed; with
+	 * an hour, at the first time that hour comes round from then.
+	 *
+	 * @param string   $frequency daily or weekly.
+	 * @param int|null $hour      0 to 23 in the site's timezone, -1 for any, null to keep it.
+	 * @return bool False for a frequency or an hour the plugin does not offer.
+	 */
+	public static function set_frequency( $frequency, $hour = null ) {
+		if ( ! isset( self::FREQUENCIES[ $frequency ] ) || ( null !== $hour && ( (int) $hour < -1 || (int) $hour > 23 ) ) ) {
 			return false;
 		}
-		SafeGrd_Settings::update( array( 'frequency' => $frequency ) );
+		$values = array( 'frequency' => $frequency );
+		if ( null !== $hour ) {
+			$values['hour'] = (int) $hour;
+		}
+		SafeGrd_Settings::update( $values );
 		$last = SafeGrd_Settings::last_run();
-		$at   = empty( $last['started_at'] ) ? time() : strtotime( $last['started_at'] ) + self::interval();
-		wp_clear_scheduled_hook( self::HOOK );
-		wp_schedule_event( max( time(), (int) $at ), $frequency, self::HOOK );
+		self::schedule_from( empty( $last['started_at'] ) ? time() : strtotime( $last['started_at'] ) + self::interval() );
 		return true;
 	}
 
@@ -89,9 +103,28 @@ final class SafeGrd_Scheduler {
 	 * backup is one interval out, on this site's frequency.
 	 */
 	public static function reschedule_after_restore() {
-		wp_clear_scheduled_hook( self::HOOK );
 		wp_clear_scheduled_hook( self::NOW_HOOK );
-		wp_schedule_event( time() + self::interval(), self::frequency(), self::HOOK );
+		self::schedule_from( time() + self::interval() );
+	}
+
+	/**
+	 * Schedules the recurring backup from $at, moved to the chosen hour.
+	 * WP-Cron then repeats it at that time of day.
+	 */
+	private static function schedule_from( $at ) {
+		$at = max( time(), (int) $at );
+		$h  = self::hour();
+		if ( $h >= 0 ) {
+			$day  = new DateTimeImmutable( '@' . $at );
+			$day  = $day->setTimezone( wp_timezone() );
+			$slot = $day->setTime( $h, 0 );
+			if ( $slot->getTimestamp() < $at ) {
+				$slot = $slot->modify( '+1 day' )->setTime( $h, 0 );
+			}
+			$at = $slot->getTimestamp();
+		}
+		wp_clear_scheduled_hook( self::HOOK );
+		wp_schedule_event( $at, self::frequency(), self::HOOK );
 	}
 
 	public static function unschedule() {
