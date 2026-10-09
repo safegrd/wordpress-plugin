@@ -184,6 +184,9 @@ final class SafeGrd_CLI {
 	 * [<snapshot>]
 	 * : The backup to restore, from wp safegrd snapshots.
 	 *
+	 * [--only=<parts>]
+	 * : Restore only these parts, comma-separated: database, plugins, themes, uploads, others. Others is the rest of wp-content. Plugin settings are in the database.
+	 *
 	 * [--yes]
 	 * : Do not ask for confirmation.
 	 *
@@ -204,8 +207,17 @@ final class SafeGrd_CLI {
 			WP_CLI::error( 'Name the backup to restore. wp safegrd snapshots lists them.' );
 		}
 		if ( ! SafeGrd_Restore::job() ) {
-			WP_CLI::confirm( sprintf( 'Restore %s onto %s? This site\'s database and content directory are replaced; the current ones are kept aside.', $args[0], home_url() ), $assoc );
-			$ok = SafeGrd_Restore::begin( $args[0] );
+			$only = null;
+			if ( ! empty( $assoc['only'] ) ) {
+				$only    = array_filter( array_map( 'trim', explode( ',', strtolower( $assoc['only'] ) ) ) );
+				$unknown = array_diff( $only, SafeGrd_Site::COMPONENTS );
+				if ( $unknown ) {
+					WP_CLI::error( sprintf( '%s is not a part of the site. Choose from: %s.', implode( ', ', $unknown ), implode( ', ', SafeGrd_Site::COMPONENTS ) ) );
+				}
+			}
+			$what = null === $only ? 'This site\'s database and content directory are replaced.' : sprintf( 'This site\'s %s are replaced.', implode( ', ', $only ) );
+			WP_CLI::confirm( sprintf( 'Restore %s onto %s? %s The current ones are kept aside.', $args[0], home_url(), $what ), $assoc );
+			$ok = SafeGrd_Restore::begin( $args[0], $only );
 			if ( is_wp_error( $ok ) ) {
 				WP_CLI::error( $ok->get_error_message() );
 			}
@@ -229,12 +241,77 @@ final class SafeGrd_CLI {
 		if ( 'restored' !== $run['status'] ) {
 			WP_CLI::error( isset( $run['message'] ) ? $run['message'] : 'The restore did not finish.' );
 		}
+		$parts = (array) ( $run['components'] ?? SafeGrd_Site::COMPONENTS );
 		WP_CLI::line( sprintf( 'Restored %s of %s (taken %s): %d tables, %d rows, %d files', $run['snapshot_id'], $run['source_url'], $run['taken_at'], $run['tables'], $run['rows'], $run['files'] ) );
+		if ( count( $parts ) < count( SafeGrd_Site::COMPONENTS ) ) {
+			WP_CLI::line( '   Only: ' . implode( ', ', $parts ) );
+		}
 		foreach ( (array) $run['notes'] as $note ) {
 			WP_CLI::line( '   ' . $note );
 		}
 		WP_CLI::line( '   The replaced tables and files are kept aside. Delete them with: wp safegrd restore --delete-copy' );
-		WP_CLI::line( '   Sign in with an administrator account of the restored site.' );
+		if ( in_array( 'database', $parts, true ) ) {
+			WP_CLI::line( '   Sign in with an administrator account of the restored site.' );
+		}
+	}
+
+	/**
+	 * Writes one part of a backup to a file: the database as a gzipped SQL dump, or plugins, themes, uploads or others as a gzipped tar.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <snapshot>
+	 * : The backup, from wp safegrd snapshots.
+	 *
+	 * <part>
+	 * : database, plugins, themes, uploads or others. Others is the rest of wp-content, with wp-config.php and .htaccess.
+	 *
+	 * [--to=<file>]
+	 * : Copy the download here. Without it, the file stays on the server for a day and its path is printed.
+	 *
+	 * [--slice-seconds=<seconds>]
+	 * : How long each slice runs. Default: the same as a backup's.
+	 *
+	 * @when after_wp_load
+	 */
+	public function download( $args, $assoc ) {
+		if ( ! SafeGrd_Restore::job() ) {
+			$ok = SafeGrd_Restore::begin( $args[0], array( $args[1] ), 'download' );
+			if ( is_wp_error( $ok ) ) {
+				WP_CLI::error( $ok->get_error_message() );
+			}
+		} elseif ( 'download' !== ( SafeGrd_Restore::job()['mode'] ?? '' ) ) {
+			WP_CLI::error( 'A restore is under way on this site. Download when it finishes.' );
+		} else {
+			WP_CLI::line( 'Continuing the download under way.' );
+		}
+		$say    = function ( $line ) {
+			if ( 0 !== strpos( $line, 'Error: ' ) ) {
+				WP_CLI::line( $line );
+			}
+		};
+		$budget = isset( $assoc['slice-seconds'] ) ? (float) $assoc['slice-seconds'] : null;
+		do {
+			$job        = new SafeGrd_Restore( $say, $budget );
+			$job->chain = false;
+			$run        = $job->run();
+			if ( 'busy' === $run['status'] ) {
+				WP_CLI::error( $run['message'] );
+			}
+		} while ( 'running' === $run['status'] );
+		if ( 'ready' !== $run['status'] ) {
+			WP_CLI::error( isset( $run['message'] ) ? $run['message'] : 'The download did not finish.' );
+		}
+		$file = SafeGrd_Restore::download_file( $run['id'] );
+		if ( ! empty( $assoc['to'] ) ) {
+			if ( ! copy( $file['path'], $assoc['to'] ) ) {
+				WP_CLI::error( 'Could not write ' . $assoc['to'] . '.' );
+			}
+			SafeGrd_Restore::delete_download( $run['id'] );
+			WP_CLI::success( sprintf( 'Wrote %s (%s).', $assoc['to'], size_format( $run['bytes'], 1 ) ) );
+			return;
+		}
+		WP_CLI::success( sprintf( '%s (%s), kept on this server until %s.', $file['path'], size_format( $run['bytes'], 1 ), wp_date( 'Y-m-d H:i', $run['expires'] ) ) );
 	}
 
 	/**

@@ -28,3 +28,16 @@ delete_transient( 'safegrd_connect_session' );
 wp_clear_scheduled_hook( 'safegrd_scheduled_backup' );
 wp_clear_scheduled_hook( 'safegrd_backup_now' );
 wp_unschedule_hook( 'safegrd_continue' );
+wp_clear_scheduled_hook( 'safegrd_expire_downloads' );
+delete_option( 'safegrd_logs' );
+delete_option( 'safegrd_downloads' );
+delete_option( 'safegrd_download_failed' );
+// Downloads still on the server: decrypted copies of the site.
+foreach ( (array) glob( rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/safegrd-download-*', GLOB_ONLYDIR ) as $safegrd_dir ) {
+	foreach ( (array) glob( $safegrd_dir . '/{,.}*', GLOB_BRACE ) as $safegrd_file ) {
+		if ( is_file( $safegrd_file ) ) {
+			wp_delete_file( $safegrd_file );
+		}
+	}
+	rmdir( $safegrd_dir ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- the plugin's own directory, emptied above.
+}

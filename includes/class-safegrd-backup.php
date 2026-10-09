@@ -179,6 +179,7 @@ final class SafeGrd_Backup {
 				return $run;
 			}
 			$run = $this->finish();
+			SafeGrd_Log::finish( $run['snapshot_id'], 'backup', $run['snapshot_id'], 'completed' );
 			delete_option( self::JOB );
 			SafeGrd_Scheduler::continue_cancel();
 			SafeGrd_Settings::record_run( $run );
@@ -729,11 +730,19 @@ final class SafeGrd_Backup {
 			'total_containers' => count( $table_stats ),
 			'wordpress'        => $wordpress,
 		);
-		$this->put_file( 'manifest.json', SafeGrd_Repo_Format::json( $meta ) );
+		// The trees' files, first, so the manifest can say what each part holds.
+		$rows = SafeGrd_Repo_Cache::run_files( $job['epoch_id'], $job['run_id'] );
+
+		// The archive's manifest says what each part of the site holds, so a
+		// download or a restore of one part can be offered with its size.
+		// The server is sent $meta without it.
+		$manifest               = $meta;
+		$manifest['components'] = self::components( $rows, $db );
+		$this->put_file( 'manifest.json', SafeGrd_Repo_Format::json( $manifest ) );
 		$this->checkpoint();
+		$rows = SafeGrd_Repo_Cache::run_files( $job['epoch_id'], $job['run_id'] );
 
 		// The trees, from every file this run saw.
-		$rows = SafeGrd_Repo_Cache::run_files( $job['epoch_id'], $job['run_id'] );
 		$root = array();
 		$data = array();
 		foreach ( $rows as $r ) {
@@ -926,6 +935,67 @@ final class SafeGrd_Backup {
 	}
 
 	/**
+	 * What each part of the site holds: files and bytes per component, the
+	 * database's tables, and the plugins and themes installed, with their
+	 * versions.
+	 *
+	 * @param array $rows Every file of the run, as {path, size}.
+	 * @param array $db   The dump's record: tables with rows and size.
+	 */
+	private static function components( array $rows, array $db ) {
+		$out = array();
+		foreach ( SafeGrd_Site::COMPONENTS as $c ) {
+			$out[ $c ] = array(
+				'files' => 0,
+				'bytes' => 0,
+			);
+		}
+		$content = SafeGrd_Site::content_path();
+		$uploads = SafeGrd_Site::uploads_path();
+		foreach ( $rows as $r ) {
+			$c = SafeGrd_Site::component( $r['path'], $content, $uploads );
+			if ( '' === $c ) {
+				continue;
+			}
+			++$out[ $c ]['files'];
+			$out[ $c ]['bytes'] += (int) $r['size'];
+		}
+		$rows_total = 0;
+		$bytes      = 0;
+		foreach ( $db['tables'] as $t ) {
+			$rows_total += (int) $t['rows'];
+			$bytes      += (int) $t['size'];
+		}
+		$out['database'] = array(
+			'tables' => count( $db['tables'] ),
+			'rows'   => $rows_total,
+			'bytes'  => $bytes,
+		);
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$out['plugins']['items'] = array();
+		foreach ( get_plugins() as $file => $p ) {
+			$out['plugins']['items'][] = array(
+				'file'    => (string) $file,
+				'name'    => (string) $p['Name'],
+				'version' => (string) $p['Version'],
+				'active'  => is_plugin_active( $file ),
+			);
+		}
+		$out['themes']['items'] = array();
+		foreach ( wp_get_themes() as $slug => $t ) {
+			$out['themes']['items'][] = array(
+				'slug'    => (string) $slug,
+				'name'    => (string) $t->get( 'Name' ),
+				'version' => (string) $t->get( 'Version' ),
+				'active'  => get_stylesheet() === $slug,
+			);
+		}
+		return $out;
+	}
+
+	/**
 	 * Stores the trees under node bottom up and returns this tree's id,
 	 * collecting every entry's content-root line on the way.
 	 */
@@ -1004,6 +1074,11 @@ final class SafeGrd_Backup {
 			'skipped'     => is_array( $this->job ) ? $this->job['skipped'] : array(),
 		);
 		$this->say( 'Error: ' . $message );
+		$key = '' !== $snapshot_id ? $snapshot_id : 'backup-' . gmdate( 'Ymd-His' );
+		if ( '' === $snapshot_id ) {
+			SafeGrd_Log::add( $key, 'backup', 'Backup', 'Error: ' . $message );
+		}
+		SafeGrd_Log::finish( $key, 'backup', '' !== $snapshot_id ? $snapshot_id : 'Backup', 'failed' );
 		if ( SafeGrd_Settings::connected() ) {
 			$this->client = $this->client ? $this->client : SafeGrd_Client::for_site();
 			$now          = gmdate( 'Y-m-d\TH:i:s\Z' );
@@ -1077,7 +1152,13 @@ final class SafeGrd_Backup {
 	}
 
 	private function say( $line ) {
-		if ( $this->say && null !== $line ) {
+		if ( null === $line ) {
+			return;
+		}
+		if ( is_array( $this->job ) && ! empty( $this->job['snapshot_id'] ) ) {
+			SafeGrd_Log::add( $this->job['snapshot_id'], 'backup', $this->job['snapshot_id'], $line );
+		}
+		if ( $this->say ) {
 			call_user_func( $this->say, $line );
 		}
 	}

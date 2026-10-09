@@ -115,6 +115,36 @@ final class SafeGrd_Site {
 	/**
 	 * The content directory relative to the root.
 	 */
+	/** The parts of a site a download or a restore can take on its own. */
+	const COMPONENTS = array( 'database', 'plugins', 'themes', 'uploads', 'others' );
+
+	/**
+	 * The part of the site a path in a backup belongs to: plugins, themes
+	 * and uploads are those directories of the content directory, others is
+	 * the rest of it and wp-config.php and .htaccess. The database's dump is
+	 * none of them: ''.
+	 *
+	 * @param string $path    The path in the backup, files/...
+	 * @param string $content The content directory's path in the backup, wp-content normally.
+	 * @param string $uploads The uploads directory's path in the backup.
+	 */
+	public static function component( $path, $content, $uploads ) {
+		if ( 0 !== strpos( $path, 'files/' ) ) {
+			return '';
+		}
+		$rel = substr( $path, 6 );
+		if ( 0 === strpos( $rel, $uploads . '/' ) ) {
+			return 'uploads';
+		}
+		if ( 0 === strpos( $rel, $content . '/plugins/' ) ) {
+			return 'plugins';
+		}
+		if ( 0 === strpos( $rel, $content . '/themes/' ) ) {
+			return 'themes';
+		}
+		return 'others';
+	}
+
 	public static function content_path() {
 		$rel = self::relative( rtrim( WP_CONTENT_DIR, '/' ) );
 		return '' !== $rel ? $rel : 'wp-content';

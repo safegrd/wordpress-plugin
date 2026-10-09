@@ -20,6 +20,12 @@ defined( 'ABSPATH' ) || exit;
 final class SafeGrd_Restore {
 	const JOB  = 'safegrd_restore';
 	const LAST = 'safegrd_last_restore';
+	/** Downloads ready to fetch: id => {path, name, snapshot_id, component, bytes, created, expires}. */
+	const DOWNLOADS = 'safegrd_downloads';
+	/** How long a download stays on the server. */
+	const DOWNLOAD_TTL = DAY_IN_SECONDS;
+	/** Bytes of tar gathered before they are compressed and written. */
+	const OUT_BUFFER = 8388608;
 	/** Rows of a table rewritten per query when the site URL changes. */
 	const URL_BATCH = 200;
 
@@ -110,12 +116,26 @@ final class SafeGrd_Restore {
 	 *
 	 * @return true|WP_Error
 	 */
-	public static function begin( $snapshot_id ) {
+	/**
+	 * Starts a restore of a snapshot, or of some of its parts.
+	 *
+	 * @param string     $snapshot_id The snapshot.
+	 * @param array|null $components  Some of SafeGrd_Site::COMPONENTS; null for all of them.
+	 * @return true|WP_Error
+	 */
+	public static function begin( $snapshot_id, $components = null, $mode = 'restore' ) {
+		$components = null === $components ? SafeGrd_Site::COMPONENTS : array_values( array_intersect( SafeGrd_Site::COMPONENTS, (array) $components ) );
+		if ( ! $components ) {
+			return new WP_Error( 'safegrd_restore', 'Choose at least one part of the site to restore.' );
+		}
+		if ( 'download' === $mode && 1 !== count( $components ) ) {
+			return new WP_Error( 'safegrd_restore', 'A download is of one part of the site: database, plugins, themes, uploads or others.' );
+		}
 		if ( ! SafeGrd_Settings::connected() ) {
 			return new WP_Error( 'safegrd_restore', 'Connect this site to SafeGrd first.' );
 		}
 		if ( self::job() ) {
-			return new WP_Error( 'safegrd_restore', 'A restore is already under way on this site.' );
+			return new WP_Error( 'safegrd_restore', 'A restore or a download is already under way on this site. Start this one when it finishes.' );
 		}
 		if ( is_array( get_option( SafeGrd_Backup::JOB, null ) ) ) {
 			return new WP_Error( 'safegrd_restore', 'A backup of this site is under way. Restore when it finishes.' );
@@ -129,6 +149,10 @@ final class SafeGrd_Restore {
 			array(
 				'snapshot_id' => $snapshot_id,
 				'id'          => $id,
+				'components'  => $components,
+				'mode'        => 'download' === $mode ? 'download' : 'restore',
+				'out_dir'     => 'safegrd-download-' . bin2hex( random_bytes( 8 ) ),
+				'out_bytes'   => 0,
 				'stage'       => 'plan',
 				'started'     => time(),
 				'tmp'         => 'sgr' . $id . '_',
@@ -193,7 +217,7 @@ final class SafeGrd_Restore {
 				return $this->progress( 'running' );
 			}
 			SafeGrd_Scheduler::continue_cancel();
-			return $this->progress( 'restored' );
+			return $this->progress( $this->downloading() ? 'ready' : 'restored' );
 		} catch ( Throwable $e ) {
 			return $this->failed( SafeGrd_Exception::text( $e ) );
 		} finally {
@@ -211,13 +235,21 @@ final class SafeGrd_Restore {
 		$stage = $this->job['stage'];
 		if ( 'plan' === $stage ) {
 			$this->plan();
-			$this->job['stage'] = 'database';
+			// Without the database there are no tables to load or check.
+			$this->job['stage'] = $this->restores( 'database' ) ? 'database' : 'files';
 			$this->save();
 			if ( $this->out_of_time() ) {
 				return false;
 			}
 		}
 		$this->open_reader();
+		if ( $this->downloading() ) {
+			if ( ! $this->write_archive() ) {
+				return false;
+			}
+			$this->ready();
+			return true;
+		}
 		if ( 'database' === $this->job['stage'] ) {
 			if ( ! $this->load_database() ) {
 				return false;
@@ -254,6 +286,9 @@ final class SafeGrd_Restore {
 	}
 
 	private function say( $line ) {
+		if ( is_array( $this->job ) && ! empty( $this->job['id'] ) ) {
+			SafeGrd_Log::add( 'restore-' . $this->job['id'], $this->downloading() ? 'download' : 'restore', $this->job['snapshot_id'], $line );
+		}
 		if ( $this->say ) {
 			call_user_func( $this->say, $line );
 		}
@@ -365,11 +400,29 @@ final class SafeGrd_Restore {
 		if ( ! is_array( $manifest ) || empty( $manifest['wordpress'] ) ) {
 			throw new SafeGrd_Exception( esc_html( 'The backup\'s manifest does not parse.' ), 'other' );
 		}
+		$this->job['uploads_path'] = $manifest['wordpress']['uploads_path'] ?? 'wp-content/uploads';
+		$this->job['components_size'] = $manifest['components'] ?? array();
+		$content                      = $this->source_content_path();
+		// A download is the backup's own copy of everything it names.
+		$own = $this->downloading() ? "\0" : 'files/' . $content . '/plugins/' . basename( dirname( SAFEGRD_FILE ) ) . '/';
+		$files   = array_values(
+			array_filter(
+				$files,
+				function ( $f ) use ( $content, $own ) {
+					// This plugin stays the version running now: the backup's
+					// copy could be older than the code doing the restore.
+					return 0 !== strpos( $f[0], $own ) && $this->restores( SafeGrd_Site::component( $f[0], $content, $this->job['uploads_path'] ) );
+				}
+			)
+		);
 		ksort( $parts );
 		if ( array_keys( $parts ) !== range( 0, count( $parts ) - 1 ) ) {
 			throw new SafeGrd_Exception( esc_html( 'A part of the backup\'s dump is missing.' ), 'other' );
 		}
 
+		if ( ! $this->restores( 'database' ) ) {
+			$parts = array();
+		}
 		self::install_tables();
 		$seq = 0;
 		foreach ( array_merge( array_values( $parts ), $files ) as list( $path, $e ) ) {
@@ -405,18 +458,34 @@ final class SafeGrd_Restore {
 		$this->job['source_prefix'] = $wp['table_prefix'];
 		$this->job['source_url']    = $wp['site_url'];
 		$this->job['source_wp']     = $wp['wordpress_version'] ?? '';
-		$this->job['uploads_path']  = $wp['uploads_path'] ?? 'wp-content/uploads';
 		$this->job['source_node']   = $rec['node_id'];
 		$this->job['taken_at']      = $rec['created_at'] ?? '';
 		$this->job['target_url']    = home_url();
 		$this->job['target_prefix'] = $wpdb->prefix;
 
-		$this->drop_leftovers();
-		$staging = $this->content_dir() . '/' . $this->job['staging'];
-		if ( ! wp_mkdir_p( $staging ) ) {
-			throw new SafeGrd_Exception( esc_html( 'Could not create ' . $staging . ' to stage the files: the content directory is not writable.' ), 'other' );
+		if ( $this->downloading() ) {
+			$this->open_out_dir();
+		} else {
+			$this->drop_leftovers();
+			$staging = $this->content_dir() . '/' . $this->job['staging'];
+			if ( ! wp_mkdir_p( $staging ) ) {
+				throw new SafeGrd_Exception( esc_html( 'Could not create ' . $staging . ' to stage the files: the content directory is not writable.' ), 'other' );
+			}
 		}
 		$this->say( sprintf( 'Snapshot of %s, taken %s: %d tables, %d files', $wp['site_url'], $this->job['taken_at'], count( $manifest['table_stats'] ), count( $files ) ) );
+		if ( count( $this->job['components'] ) < count( SafeGrd_Site::COMPONENTS ) ) {
+			$this->say( 'Restoring only: ' . implode( ', ', $this->job['components'] ) );
+		}
+	}
+
+	/** Whether this restore takes the part of the site named. */
+	private function restores( $component ) {
+		return in_array( $component, $this->job['components'] ?? SafeGrd_Site::COMPONENTS, true );
+	}
+
+	/** Whether this job writes a download instead of restoring. */
+	private function downloading() {
+		return 'download' === ( $this->job['mode'] ?? 'restore' );
 	}
 
 	/**
@@ -891,7 +960,8 @@ final class SafeGrd_Restore {
 		// site stays connected and the restore can record that it finished.
 		$this->job['stage'] = 'done';
 		$this->save();
-		$own = $db->query( "SELECT option_name, option_value, autoload FROM `{$live}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
+		$tables = $this->restores( 'database' );
+		$own    = ! $tables ? false : $db->query( "SELECT option_name, option_value, autoload FROM `{$live}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
 		while ( $own && ( $o = $own->fetch_row() ) ) {
 			$stmt = $db->prepare( "REPLACE INTO `{$tmp}options` (option_name, option_value, autoload) VALUES (?, ?, ?)" );
 			$stmt->bind_param( 'sss', $o[0], $o[1], $o[2] );
@@ -903,7 +973,7 @@ final class SafeGrd_Restore {
 		$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
 
 		$renames = array();
-		foreach ( $this->job['manifest']['tables'] as $t ) {
+		foreach ( $tables ? $this->job['manifest']['tables'] : array() as $t ) {
 			$suffix = substr( $t['table_name'], strlen( $src ) );
 			$r      = $db->query( "SHOW TABLES LIKE '" . $db->real_escape_string( addcslashes( $live . $suffix, '_%\\' ) ) . "'" );
 			if ( $r && $r->num_rows ) {
@@ -911,7 +981,7 @@ final class SafeGrd_Restore {
 			}
 			$renames[] = "`{$tmp}{$suffix}` TO `{$live}{$suffix}`";
 		}
-		if ( false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
+		if ( $renames && false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
 			if ( $maint ) {
 				wp_delete_file( $maintenance );
 			}
@@ -926,6 +996,12 @@ final class SafeGrd_Restore {
 		$stage = $content . '/' . $this->job['staging'];
 		$keep  = $content . '/' . $this->job['aside_dir'];
 		wp_mkdir_p( $keep );
+		// This plugin was left out of the staged plugins: the running copy
+		// goes into them, so it stays in place when they are swapped in.
+		$mine = basename( dirname( SAFEGRD_FILE ) );
+		if ( is_dir( $stage . '/plugins' ) && is_dir( $content . '/plugins/' . $mine ) && ! file_exists( $stage . '/plugins/' . $mine ) ) {
+			self::move( $content . '/plugins/' . $mine, $stage . '/plugins/' . $mine );
+		}
 		foreach ( (array) scandir( $stage ) as $name ) {
 			if ( '.' === $name || '..' === $name ) {
 				continue;
@@ -956,8 +1032,9 @@ final class SafeGrd_Restore {
 			'source_url'  => $this->job['source_url'],
 			'taken_at'    => $this->job['taken_at'],
 			'restored_at' => gmdate( 'c' ),
-			'tables'      => count( $this->job['manifest']['tables'] ),
-			'rows'        => $this->job['manifest']['rows'],
+			'components'  => $this->job['components'] ?? SafeGrd_Site::COMPONENTS,
+			'tables'      => $tables ? count( $this->job['manifest']['tables'] ) : 0,
+			'rows'        => $tables ? $this->job['manifest']['rows'] : 0,
 			'files'       => $this->job['files'],
 			'aside'       => $aside,
 			'aside_dir'   => $this->job['aside_dir'],
@@ -967,12 +1044,277 @@ final class SafeGrd_Restore {
 		delete_option( self::JOB );
 		update_option( self::LAST, $last, false );
 		self::drop_tables();
-		$this->say( 'Restored. Sign in with an administrator account of the restored site.' );
+		$this->say( $tables ? 'Restored. Sign in with an administrator account of the restored site.' : 'Restored ' . implode( ', ', $this->job['components'] ) . '. The database and the sign-in are as they were.' );
+		SafeGrd_Log::finish( 'restore-' . $this->job['id'], 'restore', $this->job['snapshot_id'], 'restored' );
+	}
+
+	// --- download -----------------------------------------------------------
+
+	/**
+	 * Makes the directory the download is written to: in the content
+	 * directory, named so nobody can guess it, with nothing listed and,
+	 * where Apache reads it, nothing served. The file is fetched through
+	 * wp-admin only. Refused when the disk lacks room for the part.
+	 */
+	private function open_out_dir() {
+		$dir = $this->content_dir() . '/' . $this->job['out_dir'];
+		if ( ! wp_mkdir_p( $dir ) ) {
+			throw new SafeGrd_Exception( esc_html( 'Could not create ' . $dir . ' to write the download: the content directory is not writable.' ), 'other' );
+		}
+		// phpcs:disable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- files of the plugin's own directory, written in a background request where WP_Filesystem may need credentials.
+		file_put_contents( $dir . '/index.php', "<?php\n// Silence.\n" );
+		file_put_contents( $dir . '/.htaccess', "Require all denied\nDeny from all\n" );
+		// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		$c     = $this->job['components'][0];
+		$need  = (int) ( $this->job['components_size'][ $c ]['bytes'] ?? 0 );
+		$free  = function_exists( 'disk_free_space' ) ? @disk_free_space( $dir ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- some hosts disable it; the check is then skipped.
+		if ( false !== $free && $need > 0 && $free < $need + 104857600 ) {
+			throw new SafeGrd_Exception( esc_html( sprintf( 'This server has %s free and the %s of this backup are %s. Free some space, or download it with the safegrd command line tool on another machine.', size_format( $free ), $c, size_format( $need ) ) ), 'other' );
+		}
+		$host = preg_replace( '/[^A-Za-z0-9.-]+/', '-', (string) wp_parse_url( $this->job['source_url'], PHP_URL_HOST ) );
+		$port = wp_parse_url( $this->job['source_url'], PHP_URL_PORT );
+		$name = $host . ( $port ? '-' . $port : '' ) . '-' . gmdate( 'Ymd-Hi', strtotime( $this->job['taken_at'] ) ) . '-' . $c . ( 'database' === $c ? '.sql.gz' : '.tar.gz' );
+		$this->job['out_name'] = $name;
+		$this->say( sprintf( 'Writing %s', $name ) );
+	}
+
+	private function out_path() {
+		return $this->content_dir() . '/' . $this->job['out_dir'] . '/' . $this->job['out_name'];
+	}
+
+	/**
+	 * Writes the download from where the last slice stopped. The database
+	 * is its dump, gzipped; files are a tar, gzipped. Each write appends a
+	 * gzip member, which gunzip and tar read as one stream, and the job
+	 * records the length after each whole file: a slice the host stopped
+	 * part way is cut back to it.
+	 *
+	 * @return bool Whether the whole download is written.
+	 */
+	private function write_archive() {
+		$path = $this->out_path();
+		clearstatcache( true, $path );
+		if ( is_file( $path ) && filesize( $path ) > $this->job['out_bytes'] ) {
+			$fh = fopen( $path, 'r+b' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+			ftruncate( $fh, $this->job['out_bytes'] );
+			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+		}
+		$out = fopen( $path, 'ab' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+		if ( false === $out ) {
+			throw new SafeGrd_Exception( esc_html( 'Could not write ' . $path . '.' ), 'other' );
+		}
+		$tar     = 'database' !== $this->job['components'][0];
+		$buf     = '';
+		$flush   = function () use ( &$buf, $out ) {
+			if ( '' !== $buf ) {
+				fwrite( $out, gzencode( $buf, 6 ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
+				$buf = '';
+			}
+		};
+		$last    = $this->job['parts'] + $this->job['total_files'];
+		$fetched = $this->job['seq'];
+		$taken   = (int) strtotime( $this->job['taken_at'] );
+		try {
+			for ( ; $this->job['seq'] < $last; $this->job['seq']++ ) {
+				if ( $this->out_of_time() ) {
+					// Every file before this one is written: that is where the next slice starts.
+					$flush();
+					$this->mark_written( $out );
+					return false;
+				}
+				if ( $this->job['seq'] >= $fetched ) {
+					$fetched = $this->prefetch_from( $this->job['seq'], $last );
+				}
+				$row = $this->row( $this->job['seq'] );
+				if ( $tar ) {
+					$buf .= self::tar_header( substr( $row['path'], 6 ), (int) $row['size'], (int) $row['mode'] & 0777, $taken );
+				}
+				$h = hash_init( 'sha256' );
+				foreach ( '' === $row['content'] ? array() : explode( ',', $row['content'] ) as $id ) {
+					$chunk = $this->reader->blob( $id );
+					hash_update( $h, $chunk );
+					$buf .= $chunk;
+					if ( strlen( $buf ) >= self::OUT_BUFFER ) {
+						$flush();
+					}
+				}
+				if ( hash_final( $h ) !== $row['sha256'] ) {
+					throw new SafeGrd_Exception( esc_html( $row['path'] . ' does not match its SHA-256. The download was not written.' ), 'other' );
+				}
+				if ( $tar ) {
+					$buf .= str_repeat( "\0", ( 512 - (int) $row['size'] % 512 ) % 512 );
+					$this->job['files']++;
+				}
+				$this->job['bytes'] += (int) $row['size'];
+				if ( strlen( $buf ) >= self::OUT_BUFFER ) {
+					// A whole file more is written: record it, as the file after it.
+					$flush();
+					$this->job['seq']++;
+					$this->mark_written( $out );
+					$this->job['seq']--;
+				}
+			}
+			if ( $tar ) {
+				$buf .= str_repeat( "\0", 1024 ); // the end of the archive
+			}
+			$flush();
+			$this->mark_written( $out );
+			return true;
+		} finally {
+			fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+		}
+	}
+
+	/** Records where the download stands: the next file, and its length so far. */
+	private function mark_written( $out ) {
+		fflush( $out );
+		$this->job['out_bytes'] = (int) fstat( $out )['size'];
+		$this->save();
+	}
+
+	/**
+	 * A tar header for one regular file: ustar, with a pax record before it
+	 * when the name or the size does not fit ustar's fields.
+	 */
+	public static function tar_header( $name, $size, $mode, $mtime ) {
+		$pax = '';
+		if ( strlen( $name ) > 100 ) {
+			$pax .= self::pax_record( 'path', $name );
+		}
+		if ( $size > 077777777777 ) {
+			$pax .= self::pax_record( 'size', (string) $size );
+		}
+		$out = '';
+		if ( '' !== $pax ) {
+			$out .= self::ustar( 'PaxHeader/' . substr( basename( $name ), 0, 80 ), strlen( $pax ), 0644, $mtime, 'x' );
+			$out .= $pax . str_repeat( "\0", ( 512 - strlen( $pax ) % 512 ) % 512 );
+		}
+		return $out . self::ustar( substr( $name, 0, 100 ), min( $size, 077777777777 ), $mode ? $mode : 0644, $mtime, '0' );
+	}
+
+	private static function pax_record( $key, $value ) {
+		$body = ' ' . $key . '=' . $value . "\n";
+		$len  = strlen( $body ) + 1;
+		while ( strlen( $len . $body ) !== $len ) {
+			$len = strlen( $len . $body );
+		}
+		return $len . $body;
+	}
+
+	private static function ustar( $name, $size, $mode, $mtime, $type ) {
+		$h  = str_pad( $name, 100, "\0" );
+		$h .= sprintf( '%07o', $mode ) . "\0";
+		$h .= sprintf( '%07o', 0 ) . "\0";
+		$h .= sprintf( '%07o', 0 ) . "\0";
+		$h .= sprintf( '%011o', $size ) . "\0";
+		$h .= sprintf( '%011o', max( 0, $mtime ) ) . "\0";
+		$h .= '        '; // the checksum, as spaces while it is summed
+		$h .= $type;
+		$h .= str_repeat( "\0", 100 );
+		$h .= "ustar\0" . '00';
+		$h .= str_pad( 'www-data', 32, "\0" ) . str_pad( 'www-data', 32, "\0" );
+		$h .= str_repeat( "\0", 8 ) . str_repeat( "\0", 8 );
+		$h .= str_repeat( "\0", 155 ) . str_repeat( "\0", 12 );
+		$sum = 0;
+		for ( $i = 0; $i < 512; $i++ ) {
+			$sum += ord( $h[ $i ] );
+		}
+		return substr_replace( $h, sprintf( '%06o', $sum ) . "\0 ", 148, 8 );
+	}
+
+	/** The download is written: listed for fetching, and the job ends. */
+	private function ready() {
+		$path      = $this->out_path();
+		$id        = substr( $this->job['out_dir'], strlen( 'safegrd-download-' ) );
+		$downloads = self::downloads();
+		$downloads = array(
+			$id => array(
+				'dir'         => $this->job['out_dir'],
+				'name'        => $this->job['out_name'],
+				'snapshot_id' => $this->job['snapshot_id'],
+				'source_url'  => $this->job['source_url'],
+				'taken_at'    => $this->job['taken_at'],
+				'component'   => $this->job['components'][0],
+				'bytes'       => (int) filesize( $path ),
+				'created'     => time(),
+				'expires'     => time() + self::DOWNLOAD_TTL,
+			),
+		) + $downloads;
+		update_option( self::DOWNLOADS, $downloads, false );
+		wp_schedule_single_event( time() + self::DOWNLOAD_TTL + 60, 'safegrd_expire_downloads' );
+		delete_option( self::JOB );
+		self::drop_tables();
+		$this->say( sprintf( 'Ready: %s, %s. It is deleted from this server %s.', $this->job['out_name'], size_format( (int) filesize( $path ), 1 ), wp_date( 'Y-m-d H:i', time() + self::DOWNLOAD_TTL ) ) );
+		SafeGrd_Log::finish( 'restore-' . $this->job['id'], 'download', $this->job['snapshot_id'], 'ready' );
+	}
+
+	/**
+	 * Downloads still on the server, newest first. Expired ones are deleted
+	 * on the way.
+	 *
+	 * @return array id => {dir, name, snapshot_id, source_url, taken_at, component, bytes, created, expires}
+	 */
+	public static function downloads() {
+		$all = get_option( self::DOWNLOADS, array() );
+		$all = is_array( $all ) ? $all : array();
+		$now = time();
+		$out = array();
+		foreach ( $all as $id => $d ) {
+			if ( (int) $d['expires'] <= $now ) {
+				self::rmdir( rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/' . $d['dir'] );
+				continue;
+			}
+			$out[ $id ] = $d;
+		}
+		if ( count( $out ) !== count( $all ) ) {
+			update_option( self::DOWNLOADS, $out, false );
+		}
+		return $out;
+	}
+
+	/** Deletes one download now. */
+	public static function delete_download( $id ) {
+		$all = self::downloads();
+		if ( isset( $all[ $id ] ) ) {
+			self::rmdir( rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/' . $all[ $id ]['dir'] );
+			unset( $all[ $id ] );
+			update_option( self::DOWNLOADS, $all, false );
+		}
+	}
+
+	/**
+	 * The file of a download, by its id: the path on disk and the name to
+	 * save it as, or null. The id is all the request names; the path comes
+	 * from the plugin's own record.
+	 *
+	 * @return array{path:string,name:string}|null
+	 */
+	public static function download_file( $id ) {
+		$all = self::downloads();
+		if ( ! preg_match( '/^[0-9a-f]{16}$/', (string) $id ) || ! isset( $all[ $id ] ) ) {
+			return null;
+		}
+		$path = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/' . $all[ $id ]['dir'] . '/' . $all[ $id ]['name'];
+		return is_file( $path ) ? array(
+			'path' => $path,
+			'name' => $all[ $id ]['name'],
+		) : null;
 	}
 
 	// --- outcomes -----------------------------------------------------------
 
 	private function progress( $status ) {
+		if ( 'ready' === $status ) {
+			$d = self::downloads();
+			$k = substr( $this->job['out_dir'], strlen( 'safegrd-download-' ) );
+			return array_merge(
+				array(
+					'status' => 'ready',
+					'id'     => $k,
+				),
+				isset( $d[ $k ] ) ? $d[ $k ] : array()
+			);
+		}
 		if ( 'restored' === $status ) {
 			$last = get_option( self::LAST, array() );
 			return array_merge( array( 'status' => 'restored' ), (array) $last );
@@ -994,7 +1336,21 @@ final class SafeGrd_Restore {
 	private function failed( $message ) {
 		$this->say( 'Error: ' . $message );
 		$job = $this->job;
+		$download = 'download' === ( $job['mode'] ?? 'restore' );
+		if ( ! empty( $job['id'] ) ) {
+			SafeGrd_Log::finish( 'restore-' . $job['id'], $download ? 'download' : 'restore', $job['snapshot_id'], 'failed' );
+		}
 		delete_option( self::JOB );
+		if ( $download ) {
+			SafeGrd_Scheduler::continue_cancel();
+			self::rmdir( $this->content_dir() . '/' . $job['out_dir'] );
+			self::drop_tables();
+			update_option( 'safegrd_download_failed', array( 'snapshot_id' => $job['snapshot_id'], 'component' => $job['components'][0] ?? '', 'message' => $message, 'at' => time() ), false );
+			return array(
+				'status'  => 'failed',
+				'message' => $message,
+			);
+		}
 		SafeGrd_Scheduler::continue_cancel();
 		if ( 'done' !== ( $job['stage'] ?? '' ) ) {
 			$drop = array();

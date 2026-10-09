@@ -36,6 +36,7 @@ final class SafeGrd_Scheduler {
 		add_action( self::HOOK, array( __CLASS__, 'run' ) );
 		add_action( self::NOW_HOOK, array( __CLASS__, 'run_requested' ) );
 		add_action( self::CONTINUE_HOOK, array( __CLASS__, 'run_requested' ) );
+		add_action( 'safegrd_expire_downloads', array( 'SafeGrd_Restore', 'downloads' ) );
 	}
 
 	/** How often this site backs up: daily (the default) or weekly. */
