@@ -244,6 +244,8 @@ final class SafeGrd_Connect {
 				'connected_at' => gmdate( 'c' ),
 			)
 		);
+		// A sign-in started before connecting another way has nothing left to do.
+		delete_transient( self::SESSION );
 		SafeGrd_Scheduler::schedule();
 		$out = array(
 			'node_id'     => $resp['node_id'],
