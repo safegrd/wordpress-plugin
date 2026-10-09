@@ -74,8 +74,9 @@ and confirm. The same page restores a site over itself.
 - Nothing on the site changes until every table and file is loaded and checked against the
   backup. Then one step swaps them in, and the tables and files they replace are kept aside until
   you press *Delete the copy*.
-- The site keeps its own `wp-config.php` and address. A different address is replaced in the
-  database, serialized values included; a different table prefix is handled.
+- The site keeps its own `wp-config.php` and domain. The restore runs a search and replace from
+  the old URL to the new one, serialized data included, and renames the tables to the new
+  table prefix.
 - Afterwards the site's users are the backup's: sign in with an administrator account of the
   restored site.
 

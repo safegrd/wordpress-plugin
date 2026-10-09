@@ -589,8 +589,8 @@ final class SafeGrd_Restore {
 			if ( $src !== $dst ) {
 				$this->rename_prefixed_keys( $src, $dst );
 				$this->job['notes'][] = '' === $src
-					? sprintf( 'Tables moved from no prefix to %s.', $dst )
-					: sprintf( 'Tables moved from the prefix %s to %s.', $src, $dst );
+					? sprintf( 'Tables renamed from no prefix to %s.', $dst )
+					: sprintf( 'Tables renamed from the prefix %s to %s.', $src, $dst );
 			}
 			$this->job['counted'] = true;
 			$this->save();
@@ -601,7 +601,7 @@ final class SafeGrd_Restore {
 			if ( ! $this->replace_url( $from, $to ) ) {
 				return false;
 			}
-			$this->job['notes'][] = sprintf( 'Every %s was replaced with %s, serialized values included.', $from, $to );
+			$this->job['notes'][] = sprintf( 'Search and replace: %s to %s, serialized data included.', $from, $to );
 		}
 		foreach ( array( 'siteurl' => site_url(), 'home' => home_url() ) as $name => $value ) {
 			$stmt = $db->prepare( "UPDATE `{$tmp}options` SET option_value = ? WHERE option_name = ?" );
@@ -855,7 +855,9 @@ final class SafeGrd_Restore {
 			}
 			$bytes += (int) $row['size'];
 		}
-		$this->reader->prefetch( $ids );
+		// Half of what is left of the slice at most, so it still writes files.
+		$deadline = $this->deadline > 0 ? microtime( true ) + ( $this->deadline - microtime( true ) ) / 2 : 0;
+		$this->reader->prefetch( $ids, $deadline );
 		return $end;
 	}
 

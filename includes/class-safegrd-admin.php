@@ -138,7 +138,7 @@ final class SafeGrd_Admin {
 				<p>Approve the sign-in in the tab that opened. Check that it shows this code:</p>
 				<p class="safegrd-code" id="safegrd-code"></p>
 				<p>No tab opened? <a href="#" id="safegrd-approve-link" target="_blank" rel="noopener">Open the sign-in page</a>.</p>
-				<p class="description">This page finishes connecting on its own once you approve.</p>
+				<p class="description">This page refreshes periodically and finishes connecting once you approve.</p>
 			</div>
 			<div id="safegrd-identity" hidden>
 				<h3>Your encryption key</h3>
@@ -193,13 +193,13 @@ final class SafeGrd_Admin {
 		</div>
 		<div class="safegrd-card">
 			<h2>Recent backups</h2>
-			<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. Each one is still a complete copy of the site, and restores on its own.</p>
+			<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. Every backup is still a full restore point.</p>
 			<div id="safegrd-snapshots"><p class="description">Asking SafeGrd...</p></div>
 		</div>
 		<div class="safegrd-card">
 			<h2>Restore or move a site</h2>
 			<p>Restore any WordPress site's backup in this account onto this site: a new install, or this site as it was. This site's database and content directory are replaced, and the ones it had are kept aside until you delete them. <code>wp-config.php</code> stays this site's own.</p>
-			<p class="description">To move a site to a new host or address, install WordPress and this plugin there, connect it to the same SafeGrd account, and restore the old site's backup. Its address is replaced with the new one, in serialized options too, and a different table prefix is handled.</p>
+			<p class="description">To migrate a site to a new host or domain, install WordPress and this plugin there, connect it to the same SafeGrd account, and restore the old site's backup. The restore runs a search and replace from the old URL to the new one, serialized data included, and renames the tables to the new site's table prefix.</p>
 			<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
 			<div id="safegrd-restore-list"><p class="description">Asking SafeGrd...</p></div>
 			<p class="description">A backup taken with a customer-managed key restores with the safegrd command line tool and that key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
@@ -279,7 +279,7 @@ final class SafeGrd_Admin {
 		$s       = '<p><strong>Restoring ' . esc_html( $job['snapshot_id'] . $taken ) . '.</strong> ' . esc_html( $stages[ $job['stage'] ] ?? $job['stage'] ) . '</p>';
 		$s      .= '<p>' . esc_html(
 			sprintf(
-				'Started %s, %s ago, in %d slices so far. The site runs as it is until the swap. This page updates on its own.',
+				'Started %s, %s ago, in %d slices so far. The site runs as it is until the swap. This page refreshes periodically.',
 				wp_date( 'H:i', $started ),
 				human_time_diff( $started ),
 				(int) ( $job['slices'] ?? 0 )

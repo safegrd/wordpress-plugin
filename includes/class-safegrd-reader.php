@@ -311,14 +311,22 @@ final class SafeGrd_Repo_Reader {
 	 * a site's small files sit side by side in its packs, and each GET is a
 	 * round trip to storage. blob() still checks every record against its
 	 * id; a blob prefetch did not reach is fetched on its own.
+	 *
+	 * The runs are fetched in the order $ids first needs them, and none is
+	 * started after $deadline (a microtime, 0 for none): where the next
+	 * files are spread over many packs, fetching all of them would take the
+	 * whole slice and leave it no time to write them.
 	 */
-	public function prefetch( array $ids ) {
+	public function prefetch( array $ids, $deadline = 0 ) {
 		$by_pack = array();
-		foreach ( array_unique( $ids ) as $id ) {
+		$order   = array();
+		foreach ( array_unique( $ids ) as $i => $id ) {
 			if ( isset( $this->index[ $id ] ) && ! isset( $this->records[ $id ] ) ) {
 				$by_pack[ $this->index[ $id ][0] ][] = $id;
+				$order[ $id ]                       = $i;
 			}
 		}
+		$spans = array();
 		foreach ( $by_pack as $pack => $blobs ) {
 			usort(
 				$blobs,
@@ -331,22 +339,37 @@ final class SafeGrd_Repo_Reader {
 				$off = $this->index[ $id ][1];
 				$end = $off + $this->index[ $id ][2];
 				if ( $span && ( $off - $span['end'] > self::PREFETCH_GAP || $end - $span['from'] > self::PREFETCH_SPAN ) ) {
-					$this->fetch_span( $pack, $span );
-					$span = array();
+					$spans[] = $span;
+					$span    = array();
 				}
 				if ( ! $span ) {
 					$span = array(
-						'from' => $off,
-						'end'  => $end,
-						'ids'  => array(),
+						'pack'  => $pack,
+						'from'  => $off,
+						'end'   => $end,
+						'ids'   => array(),
+						'first' => $order[ $id ],
 					);
 				}
 				$span['end']   = max( $span['end'], $end );
 				$span['ids'][] = $id;
+				$span['first'] = min( $span['first'], $order[ $id ] );
 			}
 			if ( $span ) {
-				$this->fetch_span( $pack, $span );
+				$spans[] = $span;
 			}
+		}
+		usort(
+			$spans,
+			function ( $a, $b ) {
+				return $a['first'] - $b['first'];
+			}
+		);
+		foreach ( $spans as $span ) {
+			if ( $deadline > 0 && microtime( true ) >= $deadline ) {
+				return;
+			}
+			$this->fetch_span( $span['pack'], $span );
 		}
 	}
 

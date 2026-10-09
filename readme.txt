@@ -37,7 +37,7 @@ The backup is encrypted with age on your server. Choose who keeps the key when y
 
 = Restore =
 
-From Tools, SafeGrd, on this site or on a fresh WordPress install connected to the same account. The site keeps running on its own database and files until every table and file is loaded and checked against the backup; then one step swaps them in, and what they replaced is kept until you delete it. A different site address is replaced in the database, serialized values included. The same works from WP-CLI with wp safegrd restore.
+From Tools, SafeGrd, on this site or on a fresh WordPress install connected to the same account. The site keeps running on its own database and files until every table and file is loaded and checked against the backup; then one step swaps them in, and what they replaced is kept until you delete it. A different site URL gets a search and replace in the database, serialized data included, and the tables are renamed to the new table prefix. The same works from WP-CLI with wp safegrd restore.
 
 = Hosts that stop long requests =
 
@@ -72,7 +72,7 @@ From Tools, SafeGrd, Restore, on this site or a new one connected to the same ac
 
 = Can I move the site to a new host or domain with it? =
 
-Yes. Install WordPress and this plugin on the new host, connect to the same account, and restore the backup from Tools, SafeGrd. The new site keeps its own wp-config.php and address; the old address is replaced in the database.
+Yes. Install WordPress and this plugin on the new host, connect to the same account, and restore the backup from Tools, SafeGrd. The new site keeps its own wp-config.php and domain. The restore runs a search and replace from the old URL to the new one, serialized data included.
 
 = Does it slow the site down? =
 
@@ -103,7 +103,7 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 1. Tools, SafeGrd once connected: the last backup with its tables, rows, files and lock date, the next backup, the last test restore, where the backups are and who keeps the key, and the recent backups.
 2. Restore: every WordPress backup in the account, with what each holds, and the copy kept aside from the last restore until you delete it.
 3. Connecting: choose who keeps the encryption key, then press Connect.
-4. Approving the sign-in in the tab that opens, with the code to check. The page finishes connecting on its own.
+4. Approving the sign-in in the tab that opens, with the code to check. The page refreshes periodically and finishes connecting once you approve.
 
 == Changelog ==
 
