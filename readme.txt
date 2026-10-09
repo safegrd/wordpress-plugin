@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.2.0
+Stable tag: 0.1.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -131,7 +131,7 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 
 == Changelog ==
 
-= 0.2.0 =
+= 0.1.3 =
 * Download one part of any backup: the database as a gzipped SQL dump, or plugins, themes, uploads or the rest of wp-content as a gzipped tar. Kept on the server for a day.
 * Restore only some parts of a backup. Without the database, the site keeps its content, settings and sign-in. This plugin stays the version running.
 * Tools, SafeGrd has tabs: Backups, Restore & download, Settings, Logs and Help.
