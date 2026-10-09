@@ -60,6 +60,9 @@ final class SafeGrd_Client {
 		return $args;
 	}
 
+	/** Tries of a request the server answered 429, about 36 seconds of waiting in all. */
+	const RETRIES = 8;
+
 	/**
 	 * Calls the API and decodes its JSON answer.
 	 *
@@ -86,13 +89,24 @@ final class SafeGrd_Client {
 			$args['headers']['Content-Type'] = 'application/json';
 			$args['body']                    = wp_json_encode( $body );
 		}
-		$resp = wp_remote_request( $this->base . $path, self::request_args( $args ) );
-		if ( is_wp_error( $resp ) ) {
-			return new WP_Error( 'safegrd_unreachable', sprintf( 'Could not reach %s: %s', $this->base, $resp->get_error_message() ) );
+		// A 429 asks this site to slow down: the server limits how fast one
+		// address asks for hosted storage's links, and a restore of thousands
+		// of files asks for many. Wait it out, a little longer each time, as
+		// the CLI does, unless the 429 is a quota, which waiting does not lift.
+		for ( $attempt = 1; ; $attempt++ ) {
+			$resp = wp_remote_request( $this->base . $path, self::request_args( $args ) );
+			if ( is_wp_error( $resp ) ) {
+				return new WP_Error( 'safegrd_unreachable', sprintf( 'Could not reach %s: %s', $this->base, $resp->get_error_message() ) );
+			}
+			$code = (int) wp_remote_retrieve_response_code( $resp );
+			$raw  = wp_remote_retrieve_body( $resp );
+			$data = json_decode( $raw, true );
+			$said = is_array( $data ) && ! empty( $data['error'] ) ? (string) $data['error'] : '';
+			if ( 429 !== $code || $attempt >= self::RETRIES || false !== strpos( $said, 'backups to hosted storage' ) || false !== strpos( $said, 'downloaded' ) ) {
+				break;
+			}
+			sleep( $attempt );
 		}
-		$code = (int) wp_remote_retrieve_response_code( $resp );
-		$raw  = wp_remote_retrieve_body( $resp );
-		$data = json_decode( $raw, true );
 		if ( $code < 200 || $code > 299 ) {
 			$msg = is_array( $data ) && ! empty( $data['error'] ) ? $data['error'] : sprintf( 'HTTP %d from %s%s', $code, $this->base, $path );
 			return new WP_Error( 'safegrd_http_' . $code, $msg, array( 'status' => $code ) );

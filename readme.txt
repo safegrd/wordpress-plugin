@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.4
+Stable tag: 0.1.5
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -130,6 +130,9 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 4. Approving the sign-in in the tab that opens, with the code to check. The page refreshes periodically and finishes connecting once you approve.
 
 == Changelog ==
+
+= 0.1.5 =
+* A restore or a download of a site with thousands of files waits when SafeGrd asks it to slow down, instead of stopping with "Rate limit exceeded".
 
 = 0.1.4 =
 * A restore checks it can move every directory it replaces before it changes anything. Where PHP runs as another user than the one who owns wp-content, it used to swap the tables, stop at the first directory it could not move, and leave the site in maintenance mode. It now stops first and says which directory and who owns it.

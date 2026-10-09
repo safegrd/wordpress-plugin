@@ -3,7 +3,7 @@
  * Plugin Name:       SafeGrd Backup
  * Plugin URI:        https://safegrd.dev/docs/surfaces/wordpress
  * Description:       Backs up the site's database and files, encrypted on this server, to locked storage, and test-restores the backups on a schedule.
- * Version:           0.1.4
+ * Version:           0.1.5
  * Requires at least: 6.2
  * Requires PHP:      7.4
  * Author:            SafeGrd
@@ -17,7 +17,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'SAFEGRD_VERSION', '0.1.4' );
+define( 'SAFEGRD_VERSION', '0.1.5' );
 define( 'SAFEGRD_FILE', __FILE__ );
 
 require_once __DIR__ . '/includes/class-safegrd-settings.php';
