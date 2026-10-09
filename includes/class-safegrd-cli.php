@@ -100,7 +100,8 @@ final class SafeGrd_CLI {
 			WP_CLI::line( '             Only you can decrypt these backups. Keep a copy of this key somewhere safe:' );
 			WP_CLI::line( '             ' . $done['identity'] );
 		}
-		WP_CLI::line( 'Next: wp safegrd backup takes the first backup now. After that it runs once a day.' );
+		WP_CLI::line( 'Next: the first backup starts on WP-Cron at the next page load, then runs ' . ( 'weekly' === SafeGrd_Scheduler::frequency() ? 'once a week' : 'once a day' ) . '.' );
+		WP_CLI::line( '      wp safegrd backup runs it here instead, and wp safegrd status shows how it went.' );
 	}
 
 	/**
