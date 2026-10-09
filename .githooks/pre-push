@@ -5,7 +5,9 @@
 # - every PHP file the push changes must pass php -l;
 # - commit messages and added lines must not name things private to the
 #   repository this plugin is developed beside (task list, decision records,
-#   milestone and journey ids) or carry assistant attribution;
+#   milestone and journey ids) or carry assistant attribution; SVG path
+#   data (d="M26.5 ...") is left out of that check, as its moveto commands
+#   read as milestone ids;
 # - gitleaks must find no secret in the pushed commits.
 set -eu
 
@@ -38,7 +40,8 @@ while read -r _ local_sha _ remote_sha; do
 		fail=1
 	fi
 	added=$(git log -p --format='commit %h' "$range" -- . ':(exclude).githooks/pre-push' |
-		awk '/^commit [0-9a-f]+$/ {c=$2} /^\+[^+]/ {print c": "$0}' | grep -E "$internal" || true)
+		awk '/^commit [0-9a-f]+$/ {c=$2} /^\+[^+]/ {print c": "$0}' |
+		sed -E 's/ d="[^"]*"//g' | grep -E "$internal" || true)
 	if [ -n "$added" ]; then
 		echo "Error: lines being pushed name something private:" >&2
 		echo "$added" | head -5 >&2
