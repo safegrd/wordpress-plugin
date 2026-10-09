@@ -27,17 +27,36 @@
 		n.hidden = false;
 	}
 
-	// Connecting: start a device sign-in, open the approval page, and poll
-	// until it is approved and the site is registered.
+	// Connecting: a device sign-in in a new tab, polled until approved, or a
+	// personal access token pasted here. Either can stop to ask which
+	// organization the site belongs to.
 	var connectBtn = document.getElementById("safegrd-connect-btn");
+	var tokenBtn = document.getElementById("safegrd-token-btn");
+	var orgBtn = document.getElementById("safegrd-org-btn");
+	var viaToken = false;
+
+	function custody() {
+		var picked = document.querySelector("input[name=safegrd_custody]:checked");
+		return picked ? picked.value : "safegrd";
+	}
+
+	function busy(on) {
+		[connectBtn, tokenBtn, orgBtn].forEach(function (b) { if (b) b.disabled = on; });
+	}
+
+	function failed(e) {
+		busy(false);
+		document.getElementById("safegrd-waiting").hidden = true;
+		notice("error", e.message);
+	}
+
 	if (connectBtn) {
 		connectBtn.addEventListener("click", function () {
-			var picked = document.querySelector("input[name=safegrd_custody]:checked");
-			var custody = picked ? picked.value : "safegrd";
 			// Opened now, inside the click, so a popup blocker lets it through.
 			var tab = window.open("about:blank", "_blank");
-			connectBtn.disabled = true;
-			post("safegrd_connect_start", { custody: custody }).then(function (s) {
+			viaToken = false;
+			busy(true);
+			post("safegrd_connect_start", { custody: custody() }).then(function (s) {
 				document.getElementById("safegrd-code").textContent = s.user_code;
 				var link = document.getElementById("safegrd-approve-link");
 				link.href = s.approve_url;
@@ -48,39 +67,77 @@
 				poll();
 			}).catch(function (e) {
 				if (tab) tab.close();
-				connectBtn.disabled = false;
-				notice("error", e.message);
+				failed(e);
 			});
+		});
+	}
+
+	if (tokenBtn) {
+		tokenBtn.addEventListener("click", function () {
+			viaToken = true;
+			busy(true);
+			post("safegrd_connect_token", { token: document.getElementById("safegrd-token-text").value, custody: custody() })
+				.then(finish).catch(failed);
+		});
+	}
+
+	if (orgBtn) {
+		orgBtn.addEventListener("click", function () {
+			var org = document.getElementById("safegrd-org").value;
+			busy(true);
+			var sent = viaToken
+				? post("safegrd_connect_token", { token: document.getElementById("safegrd-token-text").value, custody: custody(), org: org })
+				: post("safegrd_connect_org", { org: org });
+			sent.then(finish).catch(failed);
 		});
 	}
 
 	function poll() {
 		setTimeout(function () {
 			post("safegrd_connect_poll", {}).then(function (p) {
-				if (p.status !== "connected") {
+				if (p.status === "pending") {
 					poll();
 					return;
 				}
-				document.getElementById("safegrd-waiting").hidden = true;
-				if (p.identity) {
-					document.getElementById("safegrd-identity-text").value = p.identity;
-					document.getElementById("safegrd-identity").hidden = false;
-					connectBtn.hidden = true;
-					if (p.escrow_failed) {
-						notice("warning", "Connected, but SafeGrd did not store the key. The key below is the only copy: save it now.");
-					} else {
-						notice("success", "Connected" + (p.user_email ? " as " + p.user_email : "") + ".");
-					}
-					return;
-				}
-				notice("success", "Connected" + (p.user_email ? " as " + p.user_email : "") + ". The first backup is starting.");
-				setTimeout(function () { window.location.reload(); }, 1500);
-			}).catch(function (e) {
-				connectBtn.disabled = false;
-				document.getElementById("safegrd-waiting").hidden = true;
-				notice("error", e.message);
-			});
+				finish(p);
+			}).catch(failed);
 		}, 2000);
+	}
+
+	function finish(p) {
+		document.getElementById("safegrd-waiting").hidden = true;
+		if (p.status === "pick_org") {
+			var sel = document.getElementById("safegrd-org");
+			sel.textContent = "";
+			p.orgs.forEach(function (o) {
+				var opt = document.createElement("option");
+				opt.value = o.id;
+				opt.textContent = o.name + " (" + o.id + ")";
+				sel.appendChild(opt);
+			});
+			document.getElementById("safegrd-orgs").hidden = false;
+			busy(false);
+			connectBtn.disabled = true;
+			tokenBtn.disabled = true;
+			return;
+		}
+		document.getElementById("safegrd-token-text").value = "";
+		document.getElementById("safegrd-orgs").hidden = true;
+		var who = p.user_email ? " as " + p.user_email : "";
+		if (p.identity) {
+			document.getElementById("safegrd-identity-text").value = p.identity;
+			document.getElementById("safegrd-identity").hidden = false;
+			connectBtn.hidden = true;
+			document.getElementById("safegrd-token").hidden = true;
+			if (p.escrow_failed) {
+				notice("warning", "Connected, but SafeGrd did not store the key. The key below is the only copy: save it now.");
+			} else {
+				notice("success", "Connected" + who + ".");
+			}
+			return;
+		}
+		notice("success", "Connected" + who + ". The first backup is starting.");
+		setTimeout(function () { window.location.reload(); }, 1500);
 	}
 
 	// Connected: what SafeGrd recorded, and Back up now.

@@ -60,6 +60,8 @@ This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service. No
 2. Open Tools, SafeGrd, choose who keeps the key, and press Connect.
 3. Sign in or create an account in the tab that opens, and check the code matches the one in wp-admin.
 
+To connect without the sign-in tab, open "Connect with a token instead" and paste a personal access token from Tokens in the SafeGrd console. The site uses it once to register and does not keep it.
+
 The first backup starts right after connecting, then runs once a day.
 
 == Frequently Asked Questions ==
@@ -116,6 +118,8 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 * A restore no longer starts a backup at once: the next is one interval after it.
 * Restores read neighbouring files and folders in one request: the first stage went from minutes to seconds on a site of 3,500 files.
 * Help: the WordPress guide, support, and diagnostics to copy into a request.
+* Connect with a personal access token on the Tools page, without WP-CLI.
+* An account in several organizations picks one on the Tools page instead of needing WP-CLI.
 
 = 0.1.1 =
 * A restore's progress shows at the top of Tools, SafeGrd, and survives a reload.

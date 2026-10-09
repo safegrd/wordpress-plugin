@@ -17,6 +17,8 @@ final class SafeGrd_Admin {
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'assets' ) );
 		add_action( 'wp_ajax_safegrd_connect_start', array( __CLASS__, 'ajax_connect_start' ) );
 		add_action( 'wp_ajax_safegrd_connect_poll', array( __CLASS__, 'ajax_connect_poll' ) );
+		add_action( 'wp_ajax_safegrd_connect_token', array( __CLASS__, 'ajax_connect_token' ) );
+		add_action( 'wp_ajax_safegrd_connect_org', array( __CLASS__, 'ajax_connect_org' ) );
 		add_action( 'wp_ajax_safegrd_backup_now', array( __CLASS__, 'ajax_backup_now' ) );
 		add_action( 'wp_ajax_safegrd_set_frequency', array( __CLASS__, 'ajax_set_frequency' ) );
 		add_action( 'wp_ajax_safegrd_tick', array( __CLASS__, 'ajax_tick' ) );
@@ -115,6 +117,23 @@ final class SafeGrd_Admin {
 				</label>
 			</fieldset>
 			<p><button type="button" class="button button-primary" id="safegrd-connect-btn">Connect</button></p>
+			<details class="safegrd-token" id="safegrd-token">
+				<summary>Connect with a token instead</summary>
+				<p class="description">Create a personal access token under Tokens in the SafeGrd console and paste it here. The site uses it once to register and does not keep it.</p>
+				<p>
+					<label for="safegrd-token-text">Personal access token</label><br>
+					<input type="password" id="safegrd-token-text" class="regular-text code" autocomplete="off" spellcheck="false" placeholder="sg_pat_...">
+				</p>
+				<p><button type="button" class="button" id="safegrd-token-btn">Connect with token</button></p>
+			</details>
+			<div id="safegrd-orgs" hidden>
+				<p>This account belongs to several organizations. Pick the one this site belongs to.</p>
+				<p>
+					<label for="safegrd-org">Organization</label><br>
+					<select id="safegrd-org"></select>
+				</p>
+				<p><button type="button" class="button button-primary" id="safegrd-org-btn">Connect</button></p>
+			</div>
 			<div id="safegrd-waiting" hidden>
 				<p>Approve the sign-in in the tab that opened. Check that it shows this code:</p>
 				<p class="safegrd-code" id="safegrd-code"></p>
@@ -455,6 +474,45 @@ final class SafeGrd_Admin {
 	public static function ajax_connect_poll() {
 		self::guard();
 		$p = SafeGrd_Connect::poll();
+		if ( is_wp_error( $p ) ) {
+			wp_send_json_error( array( 'message' => $p->get_error_message() ) );
+		}
+		wp_send_json_success( $p );
+	}
+
+	public static function ajax_connect_token() {
+		self::guard();
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		$token   = isset( $_POST['token'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['token'] ) ) ) : '';
+		$custody = isset( $_POST['custody'] ) ? sanitize_key( wp_unslash( $_POST['custody'] ) ) : 'safegrd';
+		$org     = isset( $_POST['org'] ) ? sanitize_text_field( wp_unslash( $_POST['org'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		if ( '' === $token ) {
+			wp_send_json_error( array( 'message' => 'Paste a personal access token from Tokens in the SafeGrd console.' ) );
+		}
+		$done = SafeGrd_Connect::register( $token, $custody, $org );
+		if ( is_wp_error( $done ) && 'safegrd_many_orgs' === $done->get_error_code() ) {
+			wp_send_json_success(
+				array(
+					'status' => 'pick_org',
+					'orgs'   => SafeGrd_Connect::org_choices( $done ),
+				)
+			);
+		}
+		if ( is_wp_error( $done ) ) {
+			wp_send_json_error( array( 'message' => $done->get_error_message() ) );
+		}
+		$done['status'] = 'connected';
+		wp_send_json_success( $done );
+	}
+
+	/**
+	 * Finishes a browser sign-in once the person picked an organization.
+	 */
+	public static function ajax_connect_org() {
+		self::guard();
+		$org = isset( $_POST['org'] ) ? sanitize_text_field( wp_unslash( $_POST['org'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		$p   = SafeGrd_Connect::pick_org( $org );
 		if ( is_wp_error( $p ) ) {
 			wp_send_json_error( array( 'message' => $p->get_error_message() ) );
 		}
