@@ -485,6 +485,7 @@
 			(db ? "\n\nAfterwards this site's users are the backup's: sign in with an administrator account of the restored site." : "");
 		if (!window.confirm(msg)) return;
 		setRestoring(true);
+		restoresDatabase = db;
 		post("safegrd_restore_start", { snapshot: s.id, parts: parts.join(",") }).then(function () {
 			watchRestore(500);
 		}).catch(function (e) {
@@ -495,6 +496,7 @@
 
 	function startDownload(s, part) {
 		setRestoring(true);
+		restoresDatabase = false;
 		post("safegrd_download_start", { snapshot: s.id, part: part }).then(function (r) {
 			notice("info", r.message);
 			watchRestore(500);
@@ -532,9 +534,15 @@
 		box.hidden = !html;
 	}
 
+	// Whether the restore under way takes the database, and with it this
+	// site's users: unknown after a reload, so assumed.
+	var restoresDatabase = true;
+
 	function watchRestore(delay) {
+		var failures = 0;
 		var tick = function () {
 			drive().then(function () { return post("safegrd_status", { local: "1" }); }).then(function (s) {
+				failures = 0;
 				showProgress(s.progress);
 				setRestoring(!!s.restoring);
 				document.getElementById("safegrd-restore-state").innerHTML = s.restore;
@@ -544,9 +552,20 @@
 					setTimeout(tick, 4000);
 				}
 			}).catch(function () {
-				// The session ends when the restored users replace this site's.
+				// While the plugins are swapped in, a request can find this
+				// plugin's directory moved for a moment: ask again.
+				failures++;
+				if (failures < 5) {
+					setTimeout(tick, 3000);
+					return;
+				}
 				showProgress("");
-				notice("success", "The restore has finished or your session ended with it. Sign in with an administrator account of the restored site.");
+				if (restoresDatabase) {
+					// The session ends when the restored users replace this site's.
+					notice("success", "The restore has finished or your session ended with it. Sign in with an administrator account of the restored site.");
+				} else {
+					notice("error", "This page lost contact with the site. Reload it to see how the restore ended.");
+				}
 			});
 		};
 		setTimeout(tick, delay || 3000);

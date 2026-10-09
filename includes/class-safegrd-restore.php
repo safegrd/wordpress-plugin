@@ -959,6 +959,10 @@ final class SafeGrd_Restore {
 		$src     = $this->job['source_prefix'];
 		$content = $this->content_dir();
 
+		// Before anything changes: every directory the swap moves must be one
+		// PHP can move. One it cannot would stop the swap half way.
+		$this->check_movable( $content );
+
 		// This plugin's own rows go into the restored options table, so the
 		// site stays connected and the restore can record that it finished.
 		$this->job['stage'] = 'done';
@@ -975,6 +979,60 @@ final class SafeGrd_Restore {
 		$maintenance = ABSPATH . '.maintenance';
 		$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
 
+		try {
+			$this->swap_in( $db, $tables, $tmp, $aside, $live, $src, $content );
+		} finally {
+			// Whatever happened, the site does not stay in maintenance mode.
+			if ( $maint && file_exists( $maintenance ) ) {
+				wp_delete_file( $maintenance );
+			}
+		}
+		$this->finish_swap( $tables, $aside );
+	}
+
+	/**
+	 * Refuses a swap PHP could not finish: a directory of the content
+	 * directory it would move but may not, as on a host where the files
+	 * belong to another user than the one PHP runs as.
+	 */
+	private function check_movable( $content ) {
+		$stage = $content . '/' . $this->job['staging'];
+		$check = array( $content );
+		foreach ( (array) scandir( $stage ) as $name ) {
+			if ( '.' === $name || '..' === $name ) {
+				continue;
+			}
+			$check[] = $stage . '/' . $name;
+			if ( 'mu-plugins' === $name ) {
+				$check[] = $content . '/mu-plugins';
+			} elseif ( file_exists( $content . '/' . $name ) ) {
+				$check[] = $content . '/' . $name;
+			}
+			if ( 'plugins' === $name && is_dir( $content . '/plugins/' . basename( dirname( SAFEGRD_FILE ) ) ) ) {
+				$check[] = $content . '/plugins/' . basename( dirname( SAFEGRD_FILE ) );
+			}
+		}
+		$who = function_exists( 'posix_getpwuid' ) && function_exists( 'posix_geteuid' ) ? ( posix_getpwuid( posix_geteuid() )['name'] ?? '' ) : '';
+		foreach ( $check as $path ) {
+			if ( ! wp_is_writable( $path ) ) {
+				$owner = function_exists( 'posix_getpwuid' ) ? ( posix_getpwuid( (int) fileowner( $path ) )['name'] ?? '' ) : '';
+				throw new SafeGrd_Exception(
+					esc_html(
+						sprintf(
+							'PHP%s cannot move %s%s, so the restore stopped before changing anything. Make the content directory and what is in it writable by the web server, then restore again.',
+							'' !== $who ? ' (running as ' . $who . ')' : '',
+							substr( $path, strlen( dirname( $content ) ) + 1 ),
+							'' !== $owner ? ', which belongs to ' . $owner : ''
+						)
+					),
+					'other'
+				);
+			}
+		}
+	}
+
+	/** The tables and the files, swapped in while the site is in maintenance. */
+	private function swap_in( $db, $tables, $tmp, $aside, $live, $src, $content ) {
 		$renames = array();
 		foreach ( $tables ? $this->job['manifest']['tables'] : array() as $t ) {
 			$suffix = substr( $t['table_name'], strlen( $src ) );
@@ -985,9 +1043,6 @@ final class SafeGrd_Restore {
 			$renames[] = "`{$tmp}{$suffix}` TO `{$live}{$suffix}`";
 		}
 		if ( $renames && false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
-			if ( $maint ) {
-				wp_delete_file( $maintenance );
-			}
 			$this->job['stage'] = 'swap';
 			$this->save();
 			throw new SafeGrd_Exception( esc_html( 'The database refused to swap the restored tables in: ' . $db->error . '. The site is as it was.' ), 'other' );
@@ -1023,10 +1078,10 @@ final class SafeGrd_Restore {
 			self::move( $stage . '/' . $name, $content . '/' . $name );
 		}
 		self::rmdir( $stage );
-		if ( $maint ) {
-			wp_delete_file( $maintenance );
-		}
+	}
 
+	/** What a swapped-in restore leaves: caches cleared, the record, the log. */
+	private function finish_swap( $tables, $aside ) {
 		wp_cache_flush();
 		delete_option( 'rewrite_rules' );
 		SafeGrd_Scheduler::reschedule_after_restore();
