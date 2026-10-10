@@ -518,7 +518,7 @@ final class SafeGrd_Backup {
 		if ( is_file( $htaccess ) ) {
 			$roots[] = array( $htaccess, 'files/.htaccess', false );
 		}
-		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		$content = SafeGrd_Site::content_dir();
 		$roots[] = array( $content, 'files/' . SafeGrd_Site::content_path(), true );
 		$uploads = SafeGrd_Site::uploads_dir();
 		if ( is_dir( $uploads ) && 0 !== strpos( $uploads . '/', $content . '/' ) ) {
@@ -622,8 +622,8 @@ final class SafeGrd_Backup {
 				if ( $dir === $content_root && ( in_array( $name, self::EXCLUDE_DIRS, true ) || 0 === strpos( $name, 'safegrd-' ) ) ) {
 					continue; // caches, other plugins' backups, a restore's staging and kept copy
 				}
-				if ( $dir === $content_root . '/uploads' && 0 === strpos( $name, 'backwpup' ) ) {
-					continue;
+				if ( $dir === SafeGrd_Site::uploads_dir() && ( 0 === strpos( $name, 'backwpup' ) || SafeGrd_Restore::DOWNLOADS_DIR === $name ) ) {
+					continue; // another plugin's backups; this plugin's own downloads, decrypted copies of the site
 				}
 				if ( ! $this->add_tree( $full, $child, $content_root ) ) {
 					return false;
@@ -1310,6 +1310,7 @@ final class SafeGrd_Backup {
 		global $wpdb;
 		self::$took_stale = false;
 		$now   = time();
+		$held  = null;
 		$value = (string) ( $now + self::stale_seconds( $budget ) );
 		$took  = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $wpdb->options, self::LOCK, $value ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- a lock needs one atomic statement; the options API has none.
 		if ( 1 !== $took ) {

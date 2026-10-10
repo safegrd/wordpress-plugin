@@ -36,12 +36,22 @@ wp_clear_scheduled_hook( 'safegrd_expire_downloads' );
 delete_option( 'safegrd_logs' );
 delete_option( 'safegrd_downloads' );
 delete_option( 'safegrd_download_failed' );
-// Downloads still on the server: decrypted copies of the site.
-foreach ( (array) glob( rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/safegrd-download-*', GLOB_ONLYDIR ) as $safegrd_dir ) {
+// Downloads still on the server: decrypted copies of the site, under uploads/safegrd-downloads.
+$safegrd_uploads   = wp_upload_dir( null, false );
+$safegrd_downloads = rtrim( str_replace( '\\', '/', $safegrd_uploads['basedir'] ), '/' ) . '/safegrd-downloads';
+foreach ( (array) glob( $safegrd_downloads . '/*', GLOB_ONLYDIR ) as $safegrd_dir ) {
 	foreach ( (array) glob( $safegrd_dir . '/{,.}*', GLOB_BRACE ) as $safegrd_file ) {
 		if ( is_file( $safegrd_file ) ) {
 			wp_delete_file( $safegrd_file );
 		}
 	}
 	rmdir( $safegrd_dir ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- the plugin's own directory, emptied above.
+}
+foreach ( array( '/index.php', '/.htaccess' ) as $safegrd_file ) {
+	if ( is_file( $safegrd_downloads . $safegrd_file ) ) {
+		wp_delete_file( $safegrd_downloads . $safegrd_file );
+	}
+}
+if ( is_dir( $safegrd_downloads ) ) {
+	rmdir( $safegrd_downloads ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- the plugin's own directory, emptied above.
 }

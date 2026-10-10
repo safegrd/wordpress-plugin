@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.6
+Stable tag: 0.1.7
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -144,6 +144,11 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
+
+= 0.1.7 =
+* Downloads are written under uploads/safegrd-downloads, not in wp-content, and the backup leaves that directory out.
+* A download or a restored file the disk could not take in full now fails with "the disk may be full", instead of being offered for download or swapped into the site short.
+* The Connect card asks SafeGrd nothing until the site is connected.
 
 = 0.1.6 =
 * Restore single plugins, themes or tables from a backup. Every other plugin, theme and table stays as it is. The picker lists each with the version in the backup and the one installed now.

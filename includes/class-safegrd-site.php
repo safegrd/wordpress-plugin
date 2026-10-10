@@ -96,7 +96,7 @@ final class SafeGrd_Site {
 	 */
 	public static function uploads_path() {
 		$base    = self::uploads_dir();
-		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		$content = self::content_dir();
 		if ( 0 === strpos( $base . '/', $content . '/' ) ) {
 			return trim( self::content_path() . '/' . ltrim( substr( $base, strlen( $content ) ), '/' ), '/' );
 		}
@@ -204,7 +204,20 @@ final class SafeGrd_Site {
 	}
 
 	public static function content_path() {
-		$rel = self::relative( rtrim( WP_CONTENT_DIR, '/' ) );
+		$rel = self::relative( self::content_dir() );
 		return '' !== $rel ? $rel : 'wp-content';
+	}
+
+	/**
+	 * The content directory on disk: what the backup copies whole, and
+	 * whose plugins, themes and uploads a restore swaps. No WordPress
+	 * function returns its path (content_url() is its URL), so this is the
+	 * one place the constant is read. Files the plugin writes for itself go
+	 * under the uploads directory; the copies a restore stages and keeps
+	 * aside sit here, beside the directories they are renamed into, as a
+	 * copy of the uploads directory cannot live inside it.
+	 */
+	public static function content_dir() {
+		return rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
 	}
 }

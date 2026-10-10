@@ -22,14 +22,18 @@ final class SafeGrd_Restore {
 	const LAST = 'safegrd_last_restore';
 	/** The last restore that failed. Kept apart, so the copy of the last one that worked can still be put back. */
 	const FAILED = 'safegrd_restore_failed';
-	/** Downloads ready to fetch: id => {path, name, snapshot_id, component, bytes, created, expires}. */
+	/** Downloads ready to fetch: id => {dir, name, snapshot_id, component, bytes, created, expires}. */
 	const DOWNLOADS = 'safegrd_downloads';
+	/** The directory under uploads that holds them, one subdirectory each. */
+	const DOWNLOADS_DIR = 'safegrd-downloads';
 	/** How long a download stays on the server. */
 	const DOWNLOAD_TTL = DAY_IN_SECONDS;
 	/** Bytes of tar gathered before they are compressed and written. */
 	const OUT_BUFFER = 8388608;
 	/** Rows of a table rewritten per query when the site URL changes. */
 	const URL_BATCH = 200;
+	/** The mode of files the plugin writes beside the site's own. */
+	const FILE_MODE = 0644;
 
 	/** @var callable|null */
 	private $say;
@@ -173,7 +177,7 @@ final class SafeGrd_Restore {
 				'components'  => $components,
 				'items'       => $items,
 				'mode'        => 'download' === $mode ? 'download' : 'restore',
-				'out_dir'     => 'safegrd-download-' . bin2hex( random_bytes( 8 ) ),
+				'out_dir'     => bin2hex( random_bytes( 8 ) ),
 				'out_bytes'   => 0,
 				'stage'       => 'plan',
 				'started'     => time(),
@@ -628,11 +632,11 @@ final class SafeGrd_Restore {
 			// in, so the disk holds both for a while. A disk that fills up
 			// takes the running site down with it: refuse first.
 			$need = array_sum( array_map( function ( $f ) { return (int) $f[1]['size']; }, $files ) );
-			$free = function_exists( 'disk_free_space' ) ? @disk_free_space( $this->content_dir() ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- some hosts disable it; the check is then skipped.
+			$free = function_exists( 'disk_free_space' ) ? @disk_free_space( SafeGrd_Site::content_dir() ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- some hosts disable it; the check is then skipped.
 			if ( false !== $free && $need > 0 && $free < $need + 104857600 ) {
 				throw new SafeGrd_Exception( esc_html( sprintf( 'This server has %s free, and the restore writes %s of files beside the site before swapping them in, with 100 MB to spare. Free some space, or restore fewer parts.', size_format( $free, 1 ), size_format( $need, 1 ) ) ), 'other' );
 			}
-			$staging = $this->content_dir() . '/' . $this->job['staging'];
+			$staging = SafeGrd_Site::content_dir() . '/' . $this->job['staging'];
 			if ( ! wp_mkdir_p( $staging ) ) {
 				throw new SafeGrd_Exception( esc_html( 'Could not create ' . $staging . ' to stage the files: the content directory is not writable.' ), 'other' );
 			}
@@ -727,15 +731,67 @@ final class SafeGrd_Restore {
 		if ( $drop ) {
 			$db->query( 'DROP TABLE IF EXISTS ' . implode( ',', $drop ) );
 		}
-		foreach ( (array) glob( $this->content_dir() . '/safegrd-restore-*', GLOB_ONLYDIR ) as $dir ) {
+		foreach ( (array) glob( SafeGrd_Site::content_dir() . '/safegrd-restore-*', GLOB_ONLYDIR ) as $dir ) {
 			if ( basename( $dir ) !== $this->job['staging'] ) {
 				self::rmdir( $dir );
 			}
 		}
 	}
 
-	private function content_dir() {
-		return rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+	/**
+	 * Where downloads are written: a directory of the plugin's own under
+	 * uploads, with nothing listed and, where Apache reads it, nothing
+	 * served. Each download sits in a subdirectory named so nobody can
+	 * guess it, and is fetched through wp-admin only.
+	 */
+	public static function downloads_dir() {
+		return SafeGrd_Site::uploads_dir() . '/' . self::DOWNLOADS_DIR;
+	}
+
+	/**
+	 * WordPress's direct filesystem: the plugin writes in background
+	 * requests, where no credentials can be asked for. WP_Filesystem() is
+	 * not called, so FS_CHMOD_FILE is not defined: every put_contents()
+	 * here passes its mode.
+	 */
+	private static function fs() {
+		if ( ! class_exists( 'WP_Filesystem_Direct' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+		}
+		return new WP_Filesystem_Direct( null );
+	}
+
+	/**
+	 * Writes the whole string to an open file, or throws: fwrite() can
+	 * write part of it, or nothing, when the disk is full or the host
+	 * stops the request, and a file written short must never be swapped
+	 * in or offered as a download.
+	 */
+	private static function write_all( $fh, $data, $path ) {
+		$left = strlen( $data );
+		$off  = 0;
+		while ( $left > 0 ) {
+			$n = @fwrite( $fh, $off ? substr( $data, $off ) : $data ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite,WordPress.PHP.NoSilencedErrors.Discouraged -- a local file under the content or uploads directory, written as a stream; PHP raises a notice for a failed write, and the next line throws for it.
+			if ( false === $n || 0 === $n ) {
+				throw new SafeGrd_Exception( esc_html( 'Could not write ' . $path . ': the disk may be full.' ), 'other' );
+			}
+			$off  += $n;
+			$left -= $n;
+		}
+	}
+
+	/**
+	 * Puts the site in maintenance mode the way a core update does, by
+	 * writing .maintenance in the WordPress root. Best effort: the swap is
+	 * quick either way.
+	 *
+	 * @return string The file written, or '' when it could not be.
+	 */
+	private static function maintenance_on() {
+		$fs   = self::fs();
+		$file = $fs->abspath() . '.maintenance';
+		return $fs->put_contents( $file, '<?php $upgrading = ' . ( time() - self::MAINTENANCE_LEFT ) . ';', self::FILE_MODE ) ? $file : '';
 	}
 
 	private function db() {
@@ -1127,7 +1183,7 @@ final class SafeGrd_Restore {
 	private function write_files() {
 		$this->open_reader();
 		$prefix = 'files/' . $this->source_content_path() . '/';
-		$stage  = $this->content_dir() . '/' . $this->job['staging'];
+		$stage  = SafeGrd_Site::content_dir() . '/' . $this->job['staging'];
 		if ( 0 === $this->job['seq'] ) {
 			$this->job['seq'] = $this->job['parts'];
 			$this->say( 'Writing the files' );
@@ -1157,17 +1213,20 @@ final class SafeGrd_Restore {
 			if ( ! wp_mkdir_p( dirname( $dst ) ) ) {
 				throw new SafeGrd_Exception( esc_html( 'Could not create ' . dirname( $dst ) . '.' ), 'other' );
 			}
-			$fh = fopen( $dst, 'wb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+			$fh = fopen( $dst, 'wb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- a file in the staging directory on this disk, written one blob at a time: it can be larger than memory, which WP_Filesystem::put_contents() cannot take.
 			if ( false === $fh ) {
 				throw new SafeGrd_Exception( esc_html( 'Could not write ' . $dst . '.' ), 'other' );
 			}
 			$h = hash_init( 'sha256' );
-			foreach ( '' === $row['content'] ? array() : explode( ',', $row['content'] ) as $id ) {
-				$chunk = $this->reader->blob( $id );
-				hash_update( $h, $chunk );
-				fwrite( $fh, $chunk ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
+			try {
+				foreach ( '' === $row['content'] ? array() : explode( ',', $row['content'] ) as $id ) {
+					$chunk = $this->reader->blob( $id );
+					hash_update( $h, $chunk );
+					self::write_all( $fh, $chunk, $dst );
+				}
+			} finally {
+				fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 			}
-			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 			if ( hash_final( $h ) !== $row['sha256'] ) {
 				throw new SafeGrd_Exception( esc_html( $row['path'] . ' does not match its SHA-256. Nothing was restored.' ), 'other' );
 			}
@@ -1230,7 +1289,7 @@ final class SafeGrd_Restore {
 		$aside   = $this->job['aside'];
 		$live    = $this->job['target_prefix'];
 		$src     = $this->job['source_prefix'];
-		$content = $this->content_dir();
+		$content = SafeGrd_Site::content_dir();
 		$tables  = $this->restores( 'database' );
 
 		if ( 'swap' === $this->job['stage'] ) {
@@ -1271,8 +1330,7 @@ final class SafeGrd_Restore {
 			}
 		}
 
-		$maintenance = ABSPATH . '.maintenance';
-		$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . ( time() - self::MAINTENANCE_LEFT ) . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
+		$maintenance = self::maintenance_on();
 		try {
 			if ( $pending ) {
 				$renames = array();
@@ -1295,7 +1353,7 @@ final class SafeGrd_Restore {
 			$this->swap_files( $content );
 		} finally {
 			// Whatever happened, the site does not stay in maintenance mode.
-			if ( $maint && file_exists( $maintenance ) ) {
+			if ( '' !== $maintenance && file_exists( $maintenance ) ) {
 				wp_delete_file( $maintenance );
 			}
 		}
@@ -1495,20 +1553,25 @@ final class SafeGrd_Restore {
 	// --- download -----------------------------------------------------------
 
 	/**
-	 * Makes the directory the download is written to: in the content
-	 * directory, named so nobody can guess it, with nothing listed and,
-	 * where Apache reads it, nothing served. The file is fetched through
-	 * wp-admin only. Refused when the disk lacks room for the part.
+	 * Makes the directory the download is written to, under uploads (see
+	 * downloads_dir()). Refused when the disk lacks room for the part.
 	 */
 	private function open_out_dir() {
-		$dir = $this->content_dir() . '/' . $this->job['out_dir'];
-		if ( ! wp_mkdir_p( $dir ) ) {
-			throw new SafeGrd_Exception( esc_html( 'Could not create ' . $dir . ' to write the download: the content directory is not writable.' ), 'other' );
+		$up = wp_upload_dir( null, false );
+		if ( ! empty( $up['error'] ) ) {
+			throw new SafeGrd_Exception( esc_html( 'Could not write the download under the uploads directory: ' . $up['error'] ), 'other' );
 		}
-		// phpcs:disable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- files of the plugin's own directory, written in a background request where WP_Filesystem may need credentials.
-		file_put_contents( $dir . '/index.php', "<?php\n// Silence.\n" );
-		file_put_contents( $dir . '/.htaccess', "Require all denied\nDeny from all\n" );
-		// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		$base = self::downloads_dir();
+		$dir  = $base . '/' . $this->job['out_dir'];
+		if ( ! wp_mkdir_p( $dir ) ) {
+			throw new SafeGrd_Exception( esc_html( 'Could not create ' . $dir . ' to write the download: the uploads directory is not writable.' ), 'other' );
+		}
+		$fs = self::fs();
+		foreach ( array( $base, $dir ) as $d ) {
+			if ( ! $fs->put_contents( $d . '/index.php', "<?php\n// Silence.\n", self::FILE_MODE ) || ! $fs->put_contents( $d . '/.htaccess', "Require all denied\nDeny from all\n", self::FILE_MODE ) ) {
+				throw new SafeGrd_Exception( esc_html( 'Could not write to ' . $d . '.' ), 'other' );
+			}
+		}
 		$c     = $this->job['components'][0];
 		// A part's size is known; some of its items are smaller, and not checked.
 		$need  = empty( $this->job['items'][ $c ] ) ? (int) ( $this->job['components_size'][ $c ]['bytes'] ?? 0 ) : 0;
@@ -1526,7 +1589,7 @@ final class SafeGrd_Restore {
 	}
 
 	private function out_path() {
-		return $this->content_dir() . '/' . $this->job['out_dir'] . '/' . $this->job['out_name'];
+		return self::downloads_dir() . '/' . $this->job['out_dir'] . '/' . $this->job['out_name'];
 	}
 
 	/**
@@ -1543,19 +1606,25 @@ final class SafeGrd_Restore {
 		$path = $this->out_path();
 		clearstatcache( true, $path );
 		if ( is_file( $path ) && filesize( $path ) > $this->job['out_bytes'] ) {
-			$fh = fopen( $path, 'r+b' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
-			ftruncate( $fh, $this->job['out_bytes'] );
+			$fh = fopen( $path, 'r+b' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- the download being written, a local file; cut back to the last whole file.
+			if ( false === $fh || ! ftruncate( $fh, $this->job['out_bytes'] ) ) {
+				throw new SafeGrd_Exception( esc_html( 'Could not cut ' . $path . ' back to where the last slice stopped.' ), 'other' );
+			}
 			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 		}
-		$out = fopen( $path, 'ab' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+		$out = fopen( $path, 'ab' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- the download, a local file under uploads, appended to one gzip member at a time across slices: larger than memory, which WP_Filesystem::put_contents() cannot take.
 		if ( false === $out ) {
 			throw new SafeGrd_Exception( esc_html( 'Could not write ' . $path . '.' ), 'other' );
 		}
 		$tar     = 'database' !== $this->job['components'][0];
 		$buf     = '';
-		$flush   = function () use ( &$buf, $out ) {
+		$flush   = function () use ( &$buf, $out, $path ) {
 			if ( '' !== $buf ) {
-				fwrite( $out, gzencode( $buf, 6 ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
+				$gz = gzencode( $buf, 6 );
+				if ( false === $gz ) {
+					throw new SafeGrd_Exception( esc_html( 'Could not compress ' . $path . '.' ), 'other' );
+				}
+				self::write_all( $out, $gz, $path );
 				$buf = '';
 			}
 		};
@@ -1618,7 +1687,9 @@ final class SafeGrd_Restore {
 
 	/** Records where the download stands: the next file, and its length so far. */
 	private function mark_written( $out ) {
-		fflush( $out );
+		if ( ! fflush( $out ) ) {
+			throw new SafeGrd_Exception( esc_html( 'Could not write ' . $this->out_path() . ': the disk may be full.' ), 'other' );
+		}
 		$this->job['out_bytes'] = (int) fstat( $out )['size'];
 		$this->save();
 	}
@@ -1676,7 +1747,7 @@ final class SafeGrd_Restore {
 	/** The download is written: listed for fetching, and the job ends. */
 	private function ready() {
 		$path      = $this->out_path();
-		$id        = substr( $this->job['out_dir'], strlen( 'safegrd-download-' ) );
+		$id        = $this->job['out_dir'];
 		$downloads = self::downloads();
 		$downloads = array(
 			$id => array(
@@ -1712,7 +1783,7 @@ final class SafeGrd_Restore {
 		$out = array();
 		foreach ( $all as $id => $d ) {
 			if ( (int) $d['expires'] <= $now ) {
-				self::rmdir( rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/' . $d['dir'] );
+				self::rmdir( self::downloads_dir() . '/' . $d['dir'] );
 				continue;
 			}
 			$out[ $id ] = $d;
@@ -1727,7 +1798,7 @@ final class SafeGrd_Restore {
 	public static function delete_download( $id ) {
 		$all = self::downloads();
 		if ( isset( $all[ $id ] ) ) {
-			self::rmdir( rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/' . $all[ $id ]['dir'] );
+			self::rmdir( self::downloads_dir() . '/' . $all[ $id ]['dir'] );
 			unset( $all[ $id ] );
 			update_option( self::DOWNLOADS, $all, false );
 		}
@@ -1745,7 +1816,7 @@ final class SafeGrd_Restore {
 		if ( ! preg_match( '/^[0-9a-f]{16}$/', (string) $id ) || ! isset( $all[ $id ] ) ) {
 			return null;
 		}
-		$path = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/' . $all[ $id ]['dir'] . '/' . $all[ $id ]['name'];
+		$path = self::downloads_dir() . '/' . $all[ $id ]['dir'] . '/' . $all[ $id ]['name'];
 		return is_file( $path ) ? array(
 			'path' => $path,
 			'name' => $all[ $id ]['name'],
@@ -1757,7 +1828,7 @@ final class SafeGrd_Restore {
 	private function progress( $status ) {
 		if ( 'ready' === $status ) {
 			$d = self::downloads();
-			$k = substr( $this->job['out_dir'], strlen( 'safegrd-download-' ) );
+			$k = $this->job['out_dir'];
 			return array_merge(
 				array(
 					'status' => 'ready',
@@ -1794,7 +1865,7 @@ final class SafeGrd_Restore {
 		delete_option( self::JOB );
 		if ( $download ) {
 			SafeGrd_Scheduler::continue_cancel();
-			self::rmdir( $this->content_dir() . '/' . $job['out_dir'] );
+			self::rmdir( self::downloads_dir() . '/' . $job['out_dir'] );
 			self::drop_tables();
 			update_option( 'safegrd_download_failed', array( 'snapshot_id' => $job['snapshot_id'], 'component' => $job['components'][0] ?? '', 'message' => $message, 'at' => time() ), false );
 			return array(
@@ -1812,7 +1883,7 @@ final class SafeGrd_Restore {
 			if ( $drop ) {
 				$db->query( 'DROP TABLE IF EXISTS ' . implode( ',', $drop ) );
 			}
-			self::rmdir( $this->content_dir() . '/' . $job['staging'] );
+			self::rmdir( SafeGrd_Site::content_dir() . '/' . $job['staging'] );
 			self::drop_tables();
 			$message .= ' This site is as it was.';
 		} else {
@@ -1832,7 +1903,7 @@ final class SafeGrd_Restore {
 			if ( $drop ) {
 				$db->query( 'DROP TABLE IF EXISTS ' . implode( ',', $drop ) );
 			}
-			self::rmdir( $this->content_dir() . '/' . $job['staging'] );
+			self::rmdir( SafeGrd_Site::content_dir() . '/' . $job['staging'] );
 			self::drop_tables();
 			update_option(
 				self::LAST,
@@ -1904,7 +1975,7 @@ final class SafeGrd_Restore {
 		$live    = $wpdb->prefix;
 		$aside   = $last['aside'];
 		$swap    = 'sgu' . substr( bin2hex( random_bytes( 3 ) ), 0, 6 ) . '_';
-		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		$content = SafeGrd_Site::content_dir();
 		$keep    = $content . '/' . $last['aside_dir'];
 		try {
 			$exists = function ( $name ) use ( $db ) {
@@ -1946,8 +2017,7 @@ final class SafeGrd_Restore {
 					$renames[] = "`{$aside}{$suffix}` TO `{$live}{$suffix}`";
 				}
 			}
-			$maintenance = ABSPATH . '.maintenance';
-			$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . ( time() - self::MAINTENANCE_LEFT ) . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
+			$maintenance = self::maintenance_on();
 			try {
 				if ( $renames && false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
 					throw new SafeGrd_Exception( esc_html( 'The database refused to put the tables back: ' . $db->error . '. Nothing was changed.' ), 'other' );
@@ -1968,7 +2038,7 @@ final class SafeGrd_Restore {
 					}
 				}
 			} finally {
-				if ( $maint && file_exists( $maintenance ) ) {
+				if ( '' !== $maintenance && file_exists( $maintenance ) ) {
 					wp_delete_file( $maintenance );
 				}
 			}
@@ -2000,7 +2070,7 @@ final class SafeGrd_Restore {
 	 */
 	public static function older_copies() {
 		$last    = get_option( self::LAST, array() );
-		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		$content = SafeGrd_Site::content_dir();
 		$out     = array(
 			'dirs'   => array(),
 			'tables' => array(),
@@ -2039,7 +2109,7 @@ final class SafeGrd_Restore {
 			$db->query( 'DROP TABLE IF EXISTS `' . implode( '`,`', $old['tables'] ) . '`' );
 			$db->close();
 		}
-		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		$content = SafeGrd_Site::content_dir();
 		foreach ( $old['dirs'] as $d ) {
 			self::rmdir( $content . '/' . $d );
 		}
@@ -2066,7 +2136,7 @@ final class SafeGrd_Restore {
 			$db->query( 'DROP TABLE IF EXISTS ' . implode( ',', $drop ) );
 		}
 		$db->close();
-		self::rmdir( rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' ) . '/' . $last['aside_dir'] );
+		self::rmdir( SafeGrd_Site::content_dir() . '/' . $last['aside_dir'] );
 		unset( $last['aside'], $last['aside_dir'] );
 		update_option( self::LAST, $last, false );
 		return sprintf( 'Deleted the copy from before the restore: %d tables and its files.', count( $drop ) );
@@ -2079,12 +2149,7 @@ final class SafeGrd_Restore {
 	 * restore and says which.
 	 */
 	private static function move( $from, $to ) {
-		if ( ! class_exists( 'WP_Filesystem_Direct' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
-			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
-		}
-		$fs = new WP_Filesystem_Direct( null );
-		if ( ! $fs->move( $from, $to, false ) ) {
+		if ( ! self::fs()->move( $from, $to, false ) ) {
 			throw new SafeGrd_Exception( esc_html( 'Could not move ' . $from . ' to ' . $to . '. The files may be part swapped: the ones kept aside are in the content directory under safegrd-before-restore-*.' ), 'other' );
 		}
 	}

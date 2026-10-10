@@ -408,9 +408,14 @@ final class SafeGrd_Admin {
 	/**
 	 * What the free plan includes, in the server's own words: the catalogue
 	 * is the server's, so this page never disagrees with what it enforces.
-	 * Nothing when the server cannot be reached.
+	 * Nothing when the server cannot be reached, and nothing is asked of it
+	 * until the site is connected: the first request to SafeGrd is the one
+	 * the administrator starts with Connect.
 	 */
 	private static function free_plan() {
+		if ( ! SafeGrd_Settings::connected() ) {
+			return '<p>What the free plan and each paid plan include: <a href="https://safegrd.dev/pricing" target="_blank" rel="noopener">safegrd.dev/pricing</a>.</p>';
+		}
 		$plans = get_transient( 'safegrd_plans' );
 		if ( ! is_array( $plans ) ) {
 			$r = ( new SafeGrd_Client( SafeGrd_Settings::server_url() ) )->call( 'GET', '/api/v1/plans', null, 10 );
