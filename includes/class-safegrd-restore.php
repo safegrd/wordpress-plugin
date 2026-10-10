@@ -113,6 +113,14 @@ final class SafeGrd_Restore {
 
 	// --- starting -----------------------------------------------------------
 
+	/**
+	 * WordPress holds a site in maintenance for ten minutes from the time in
+	 * .maintenance. The swap's is dated so it lasts one: if the host stops
+	 * the slice before it is removed, the site and the slice that finishes
+	 * the swap are refused for a minute, not ten.
+	 */
+	const MAINTENANCE_LEFT = 540;
+
 	/** The parts a restore or a download can take item by item. */
 	const ITEM_PARTS = array( 'plugins', 'themes', 'database' );
 
@@ -273,6 +281,9 @@ final class SafeGrd_Restore {
 		$next           = false;
 		try {
 			SafeGrd_Scheduler::continue_later( 0.0 === $this->budget ? HOUR_IN_SECONDS : SafeGrd_Backup::stale_seconds( $this->budget ) );
+			if ( SafeGrd_Backup::$took_stale ) {
+				$this->note_death();
+			}
 			$this->job['slices']++;
 			$done = $this->work();
 			if ( ! $done ) {
@@ -306,7 +317,6 @@ final class SafeGrd_Restore {
 				return false;
 			}
 		}
-		$this->open_reader();
 		if ( $this->downloading() ) {
 			if ( ! $this->write_archive() ) {
 				return false;
@@ -335,7 +345,8 @@ final class SafeGrd_Restore {
 			$this->job['stage'] = 'swap';
 			$this->save();
 		}
-		if ( 'swap' === $this->job['stage'] ) {
+		// done: a swap a stopped slice began, which this one finishes.
+		if ( 'swap' === $this->job['stage'] || 'done' === $this->job['stage'] ) {
 			$this->swap();
 		}
 		return true;
@@ -343,6 +354,43 @@ final class SafeGrd_Restore {
 
 	private function out_of_time() {
 		return $this->deadline > 0 && microtime( true ) >= $this->deadline;
+	}
+
+	/**
+	 * After a slice the host stopped: a dump part it was loading starts
+	 * again from its DROP TABLE, as its statements since the last saved
+	 * offset may have run, and running an INSERT twice fails on its keys.
+	 * Stopped DEATHS times at one point, the restore fails, with the site as
+	 * it was or, mid-swap, with the copy to put back.
+	 *
+	 * @throws SafeGrd_Exception When the restore has to fail.
+	 */
+	private function note_death() {
+		$at = implode( '|', array( $this->job['stage'], (int) $this->job['part'], (int) $this->job['seq'], (int) $this->job['table'] ) );
+		if ( ( $this->job['died_at'] ?? '' ) === $at ) {
+			$this->job['deaths'] = (int) ( $this->job['deaths'] ?? 0 ) + 1;
+		} else {
+			$this->job['died_at'] = $at;
+			$this->job['deaths']  = 1;
+		}
+		$doing = array(
+			'plan'     => 'reading the backup',
+			'database' => sprintf( 'loading part %d of the database dump', (int) $this->job['part'] + 1 ),
+			'tables'   => 'checking the tables and replacing the site address',
+			'files'    => 'writing the files',
+			'swap'     => 'swapping the restored site in',
+			'done'     => 'swapping the restored site in',
+		);
+		$doing = $doing[ $this->job['stage'] ] ?? $this->job['stage'];
+		if ( 'database' === $this->job['stage'] && (int) $this->job['offset'] > 0 ) {
+			$this->job['offset'] = 0;
+			$doing              .= ', which starts again at its beginning';
+		}
+		$this->save();
+		$this->say( sprintf( 'Warning: the host stopped the last slice before it finished, while %s (%d of %d times at this point).', $doing, $this->job['deaths'], SafeGrd_Backup::DEATHS ) );
+		if ( $this->job['deaths'] >= SafeGrd_Backup::DEATHS ) {
+			throw new SafeGrd_Exception( esc_html( sprintf( 'The host stopped the restore %d times at the same point, while %s. Run it from the server, where PHP has no time limit: wp safegrd restore %s.', $this->job['deaths'], $doing, $this->job['snapshot_id'] ) ), 'other' );
+		}
 	}
 
 	private function save() {
@@ -538,18 +586,14 @@ final class SafeGrd_Restore {
 		}
 		self::install_tables();
 		$seq = 0;
-		foreach ( array_merge( array_values( $parts ), $files ) as list( $path, $e ) ) {
-			$wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- the plugin's own table, which only this plugin reads and writes.
-				self::files_table(),
-				array(
-					'seq'     => $seq++,
-					'path'    => $path,
-					'size'    => (int) $e['size'],
-					'sha256'  => $e['sha256'],
-					'content' => implode( ',', $e['content'] ),
-					'mode'    => (int) $e['mode'],
-				)
-			);
+		foreach ( array_chunk( array_merge( array_values( $parts ), $files ), 200 ) as $chunk ) {
+			$values = array();
+			$args   = array();
+			foreach ( $chunk as list( $path, $e ) ) {
+				$values[] = '(%d,%s,%d,%s,%s,%d)';
+				array_push( $args, $seq++, $path, (int) $e['size'], $e['sha256'], implode( ',', $e['content'] ), (int) $e['mode'] );
+			}
+			$wpdb->query( $wpdb->prepare( 'INSERT INTO %i (seq,path,size,sha256,content,mode) VALUES ' . implode( ',', $values ), array_merge( array( self::files_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
 		}
 		foreach ( array_chunk( $this->reader->index(), 200, true ) as $chunk ) {
 			$values = array();
@@ -580,6 +624,14 @@ final class SafeGrd_Restore {
 			$this->open_out_dir();
 		} else {
 			$this->drop_leftovers();
+			// The files are written beside the site before they are swapped
+			// in, so the disk holds both for a while. A disk that fills up
+			// takes the running site down with it: refuse first.
+			$need = array_sum( array_map( function ( $f ) { return (int) $f[1]['size']; }, $files ) );
+			$free = function_exists( 'disk_free_space' ) ? @disk_free_space( $this->content_dir() ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- some hosts disable it; the check is then skipped.
+			if ( false !== $free && $need > 0 && $free < $need + 104857600 ) {
+				throw new SafeGrd_Exception( esc_html( sprintf( 'This server has %s free, and the restore writes %s of files beside the site before swapping them in, with 100 MB to spare. Free some space, or restore fewer parts.', size_format( $free, 1 ), size_format( $need, 1 ) ) ), 'other' );
+			}
 			$staging = $this->content_dir() . '/' . $this->job['staging'];
 			if ( ! wp_mkdir_p( $staging ) ) {
 				throw new SafeGrd_Exception( esc_html( 'Could not create ' . $staging . ' to stage the files: the content directory is not writable.' ), 'other' );
@@ -705,9 +757,21 @@ final class SafeGrd_Restore {
 		return $out;
 	}
 
+	/** @var array seq => row, read ROWS at a time. */
+	private $rows = array();
+	/** Rows of the plan read in one query. */
+	const ROWS = 300;
+
+	/** One file of the plan: read with the ones after it, a query per ROWS files. */
 	private function row( $seq ) {
-		global $wpdb;
-		return $wpdb->get_row( $wpdb->prepare( 'SELECT seq,path,size,sha256,content,mode FROM %i WHERE seq = %d', self::files_table(), $seq ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		if ( ! isset( $this->rows[ $seq ] ) ) {
+			global $wpdb;
+			$this->rows = array();
+			foreach ( (array) $wpdb->get_results( $wpdb->prepare( 'SELECT seq,path,size,sha256,content,mode FROM %i WHERE seq >= %d AND seq < %d', self::files_table(), $seq, $seq + self::ROWS ), ARRAY_A ) as $r ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+				$this->rows[ (int) $r['seq'] ] = $r;
+			}
+		}
+		return $this->rows[ $seq ] ?? null;
 	}
 
 	// --- database -----------------------------------------------------------
@@ -719,6 +783,8 @@ final class SafeGrd_Restore {
 	 * @return bool Whether the whole dump is loaded.
 	 */
 	private function load_database() {
+		// Opening the backup releases its key: only the stages that read it do.
+		$this->open_reader();
 		$db = $this->db();
 		// What the dump's header sets, again in every slice: a slice that
 		// resumes mid-dump has its own connection.
@@ -805,6 +871,12 @@ final class SafeGrd_Restore {
 		if ( false === $this->db()->query( $sql ) ) {
 			throw new SafeGrd_Exception( esc_html( 'The database refused a statement of the dump: ' . $this->db()->error . ' (' . substr( $sql, 0, 120 ) . ')' ), 'other' );
 		}
+		/**
+		 * Fires after a statement of the dump ran, before its offset is saved.
+		 *
+		 * @param string $sql The statement, with its table renamed to the temporary prefix.
+		 */
+		do_action( 'safegrd_restore_statement', $sql );
 	}
 
 	// --- tables -------------------------------------------------------------
@@ -880,12 +952,16 @@ final class SafeGrd_Restore {
 		}
 		$like = $db->real_escape_string( addcslashes( $src, '_%\\' ) ) . '%';
 		$from = strlen( $src ) + 1;
+		// Run again after a stopped slice, a new prefix that starts with the
+		// old one (wp_ to wp_shop_) would be added twice: keys that already
+		// carry it are left.
+		$done = 0 === strpos( $dst, $src ) ? " AND {col} NOT LIKE '" . $db->real_escape_string( addcslashes( $dst, '_%\\' ) ) . "%'" : '';
 		$sqls = array();
 		if ( $options ) {
-			$sqls[] = "UPDATE `{$tmp}options` SET option_name = CONCAT('$to', SUBSTRING(option_name, $from)) WHERE option_name LIKE '$like'";
+			$sqls[] = "UPDATE `{$tmp}options` SET option_name = CONCAT('$to', SUBSTRING(option_name, $from)) WHERE option_name LIKE '$like'" . str_replace( '{col}', 'option_name', $done );
 		}
 		if ( $usermeta ) {
-			$sqls[] = "UPDATE `{$tmp}usermeta` SET meta_key = CONCAT('$to', SUBSTRING(meta_key, $from)) WHERE meta_key LIKE '$like'";
+			$sqls[] = "UPDATE `{$tmp}usermeta` SET meta_key = CONCAT('$to', SUBSTRING(meta_key, $from)) WHERE meta_key LIKE '$like'" . str_replace( '{col}', 'meta_key', $done );
 		}
 		foreach ( $sqls as $sql ) {
 			if ( false === $db->query( $sql ) ) {
@@ -947,6 +1023,10 @@ final class SafeGrd_Restore {
 					throw new SafeGrd_Exception( esc_html( 'Reading ' . $suffix . ' to replace the site URL failed: ' . $db->error ), 'other' );
 				}
 				$n = 0;
+				// A batch and its saved place go together, near enough: a
+				// slice stopped between them would replace the batch again,
+				// which a new address containing the old one would not survive.
+				$db->query( 'START TRANSACTION' );
 				while ( $row = $res->fetch_assoc() ) {
 					$n++;
 					$set = array();
@@ -964,6 +1044,8 @@ final class SafeGrd_Restore {
 					}
 					$this->job['pk'] = $row[ $key ];
 				}
+				$db->query( 'COMMIT' );
+				$this->save();
 				if ( $n < self::URL_BATCH ) {
 					break;
 				}
@@ -1043,6 +1125,7 @@ final class SafeGrd_Restore {
 	 * @return bool Whether every file is written.
 	 */
 	private function write_files() {
+		$this->open_reader();
 		$prefix = 'files/' . $this->source_content_path() . '/';
 		$stage  = $this->content_dir() . '/' . $this->job['staging'];
 		if ( 0 === $this->job['seq'] ) {
@@ -1136,40 +1219,80 @@ final class SafeGrd_Restore {
 
 	/**
 	 * Puts the loaded tables and staged files in place, keeping what they
-	 * replace aside.
+	 * replace aside. A slice the host stops part way leaves the job at stage
+	 * done, and the next slice finishes from where it got to: the tables
+	 * move in one RENAME or not at all, and each file moves only while it is
+	 * still where it was.
 	 */
 	private function swap() {
-		global $wpdb;
-		$this->say( 'Swapping the restored site in' );
 		$db      = $this->db();
 		$tmp     = $this->job['tmp'];
 		$aside   = $this->job['aside'];
 		$live    = $this->job['target_prefix'];
 		$src     = $this->job['source_prefix'];
 		$content = $this->content_dir();
+		$tables  = $this->restores( 'database' );
 
-		// Before anything changes: every directory the swap moves must be one
-		// PHP can move. One it cannot would stop the swap half way.
-		$this->check_movable( $content );
+		if ( 'swap' === $this->job['stage'] ) {
+			$this->say( 'Swapping the restored site in' );
+			// Before anything changes: every directory the swap moves must be one
+			// PHP can move. One it cannot would stop the swap half way.
+			$this->check_movable( $content );
+			// What this restore puts in place, so it can be put back: the tables
+			// by their name after the prefix, the files by their path in the
+			// content directory. Written down before anything moves.
+			$this->job['tables_in'] = array();
+			foreach ( $tables ? $this->job['manifest']['tables'] : array() as $t ) {
+				$this->job['tables_in'][] = substr( $t['table_name'], strlen( $src ) );
+			}
+			$this->job['placed'] = array();
+			$this->job['stage']  = 'done';
+			$this->save();
+		} else {
+			$this->say( 'Finishing the swap a stopped slice began' );
+		}
 
-		// This plugin's own rows go into the restored options table, so the
-		// site stays connected and the restore can record that it finished.
-		$this->job['stage'] = 'done';
-		$this->save();
-		$tables = $this->restores( 'database' );
-		$own    = ! $this->has_table( 'options' ) ? false : $db->query( "SELECT option_name, option_value, autoload FROM `{$live}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
-		while ( $own && ( $o = $own->fetch_row() ) ) {
-			$stmt = $db->prepare( "REPLACE INTO `{$tmp}options` (option_name, option_value, autoload) VALUES (?, ?, ?)" );
-			$stmt->bind_param( 'sss', $o[0], $o[1], $o[2] );
-			$stmt->execute();
-			$stmt->close();
+		// The tables still to move: all of them, or none once the RENAME ran.
+		$pending = array();
+		foreach ( (array) $this->job['tables_in'] as $suffix ) {
+			if ( $this->table_exists( $db, $tmp . $suffix ) ) {
+				$pending[] = $suffix;
+			}
+		}
+		if ( in_array( 'options', $pending, true ) ) {
+			// This plugin's own rows go into the restored options table, so the
+			// site stays connected and the restore can record that it finished.
+			$own = $db->query( "SELECT option_name, option_value, autoload FROM `{$live}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
+			while ( $own && ( $o = $own->fetch_row() ) ) {
+				$stmt = $db->prepare( "REPLACE INTO `{$tmp}options` (option_name, option_value, autoload) VALUES (?, ?, ?)" );
+				$stmt->bind_param( 'sss', $o[0], $o[1], $o[2] );
+				$stmt->execute();
+				$stmt->close();
+			}
 		}
 
 		$maintenance = ABSPATH . '.maintenance';
-		$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
-
+		$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . ( time() - self::MAINTENANCE_LEFT ) . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
 		try {
-			$this->swap_in( $db, $tables, $tmp, $aside, $live, $src, $content );
+			if ( $pending ) {
+				$renames = array();
+				foreach ( $pending as $suffix ) {
+					if ( $this->table_exists( $db, $live . $suffix ) ) {
+						$renames[] = "`{$live}{$suffix}` TO `{$aside}{$suffix}`";
+					}
+					$renames[] = "`{$tmp}{$suffix}` TO `{$live}{$suffix}`";
+				}
+				if ( false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
+					if ( ! $this->job['placed'] ) {
+						// Nothing moved yet: the restore can fail as one that never swapped.
+						$this->job['stage'] = 'swap';
+						$this->save();
+						throw new SafeGrd_Exception( esc_html( 'The database refused to swap the restored tables in: ' . $db->error . '. The site is as it was.' ), 'other' );
+					}
+					throw new SafeGrd_Exception( esc_html( 'The database refused to swap the restored tables in: ' . $db->error . '.' ), 'other' );
+				}
+			}
+			$this->swap_files( $content );
 		} finally {
 			// Whatever happened, the site does not stay in maintenance mode.
 			if ( $maint && file_exists( $maintenance ) ) {
@@ -1179,6 +1302,11 @@ final class SafeGrd_Restore {
 		$this->finish_swap( $tables, $aside );
 	}
 
+	private function table_exists( $db, $name ) {
+		$r = $db->query( "SHOW TABLES LIKE '" . $db->real_escape_string( addcslashes( $name, '_%\\' ) ) . "'" );
+		return $r && $r->num_rows > 0;
+	}
+
 	/**
 	 * Refuses a swap PHP could not finish: a directory of the content
 	 * directory it would move but may not, as on a host where the files
@@ -1186,18 +1314,23 @@ final class SafeGrd_Restore {
 	 */
 	private function check_movable( $content ) {
 		$stage = $content . '/' . $this->job['staging'];
+		$mine  = basename( dirname( SAFEGRD_FILE ) );
 		$check = array( $content );
-		foreach ( (array) scandir( $stage ) as $name ) {
-			if ( '.' === $name || '..' === $name ) {
-				continue;
-			}
-			if ( $this->by_item( $name ) ) {
-				// Only the chosen plugins or themes move, inside the live directory.
+		foreach ( self::children( $stage ) as $name ) {
+			if ( 'plugins' === $name || $this->by_item( $name ) ) {
+				// Item by item, inside the live directory.
 				$check[] = $content . '/' . $name;
 				foreach ( self::children( $stage . '/' . $name ) as $item ) {
 					$check[] = $stage . '/' . $name . '/' . $item;
 					if ( file_exists( $content . '/' . $name . '/' . $item ) ) {
 						$check[] = $content . '/' . $name . '/' . $item;
+					}
+				}
+				if ( 'plugins' === $name && ! $this->by_item( 'plugins' ) && is_dir( $content . '/plugins' ) ) {
+					foreach ( self::children( $content . '/plugins' ) as $item ) {
+						if ( $item !== $mine ) {
+							$check[] = $content . '/plugins/' . $item;
+						}
 					}
 				}
 				continue;
@@ -1208,12 +1341,9 @@ final class SafeGrd_Restore {
 			} elseif ( file_exists( $content . '/' . $name ) ) {
 				$check[] = $content . '/' . $name;
 			}
-			if ( 'plugins' === $name && is_dir( $content . '/plugins/' . basename( dirname( SAFEGRD_FILE ) ) ) ) {
-				$check[] = $content . '/plugins/' . basename( dirname( SAFEGRD_FILE ) );
-			}
 		}
 		$who = function_exists( 'posix_getpwuid' ) && function_exists( 'posix_geteuid' ) ? ( posix_getpwuid( posix_geteuid() )['name'] ?? '' ) : '';
-		foreach ( $check as $path ) {
+		foreach ( array_unique( $check ) as $path ) {
 			if ( ! wp_is_writable( $path ) ) {
 				$owner = function_exists( 'posix_getpwuid' ) ? ( posix_getpwuid( (int) fileowner( $path ) )['name'] ?? '' ) : '';
 				throw new SafeGrd_Exception(
@@ -1231,75 +1361,87 @@ final class SafeGrd_Restore {
 		}
 	}
 
-	/** The tables and the files, swapped in while the site is in maintenance. */
-	private function swap_in( $db, $tables, $tmp, $aside, $live, $src, $content ) {
-		$renames = array();
-		// What this restore puts in place, so it can be put back: the tables
-		// by their name after the prefix, the files by their path in the
-		// content directory.
-		$this->job['tables_in'] = array();
-		$this->job['placed']    = array();
-		foreach ( $tables ? $this->job['manifest']['tables'] : array() as $t ) {
-			$suffix                   = substr( $t['table_name'], strlen( $src ) );
-			$this->job['tables_in'][] = $suffix;
-			$r      = $db->query( "SHOW TABLES LIKE '" . $db->real_escape_string( addcslashes( $live . $suffix, '_%\\' ) ) . "'" );
-			if ( $r && $r->num_rows ) {
-				$renames[] = "`{$live}{$suffix}` TO `{$aside}{$suffix}`";
-			}
-			$renames[] = "`{$tmp}{$suffix}` TO `{$live}{$suffix}`";
-		}
-		if ( $renames && false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
-			$this->job['stage'] = 'swap';
-			$this->save();
-			throw new SafeGrd_Exception( esc_html( 'The database refused to swap the restored tables in: ' . $db->error . '. The site is as it was.' ), 'other' );
-		}
-
-		// Files: each top-level entry of the content directory, kept aside
-		// and replaced. mu-plugins is merged: a host's own must-use plugins
-		// stay.
+	/**
+	 * The staged files, into place. Each top-level entry of the content
+	 * directory is kept aside and replaced, but plugins, which go one by one:
+	 * the running copy of this plugin never leaves the plugins directory,
+	 * and on a whole-plugins restore the plugins the backup does not hold
+	 * go aside after. mu-plugins is merged: a host's own must-use plugins
+	 * stay.
+	 */
+	private function swap_files( $content ) {
 		$stage = $content . '/' . $this->job['staging'];
 		$keep  = $content . '/' . $this->job['aside_dir'];
-		wp_mkdir_p( $keep );
-		// This plugin was left out of the staged plugins: the running copy
-		// goes into them, so it stays in place when they are swapped in.
-		$mine = basename( dirname( SAFEGRD_FILE ) );
-		if ( ! $this->by_item( 'plugins' ) && is_dir( $stage . '/plugins' ) && is_dir( $content . '/plugins/' . $mine ) && ! file_exists( $stage . '/plugins/' . $mine ) ) {
-			self::move( $content . '/plugins/' . $mine, $stage . '/plugins/' . $mine );
+		if ( ! is_dir( $stage ) ) {
+			return;
 		}
-		foreach ( (array) scandir( $stage ) as $name ) {
-			if ( '.' === $name || '..' === $name ) {
-				continue;
-			}
-			if ( $this->by_item( $name ) ) {
-				// Some plugins or themes: each replaces its own directory, and
-				// every other one stays as it is.
-				wp_mkdir_p( $keep . '/' . $name );
+		wp_mkdir_p( $keep );
+		$mine = basename( dirname( SAFEGRD_FILE ) );
+		foreach ( self::children( $stage ) as $name ) {
+			if ( 'plugins' === $name || $this->by_item( $name ) ) {
 				wp_mkdir_p( $content . '/' . $name );
 				foreach ( self::children( $stage . '/' . $name ) as $item ) {
-					if ( file_exists( $content . '/' . $name . '/' . $item ) ) {
-						self::move( $content . '/' . $name . '/' . $item, $keep . '/' . $name . '/' . $item );
+					$this->place( $name . '/' . $item, $stage, $content, $keep );
+				}
+				if ( 'plugins' === $name && ! $this->by_item( 'plugins' ) ) {
+					foreach ( self::children( $content . '/plugins' ) as $item ) {
+						if ( $item !== $mine && ! in_array( 'plugins/' . $item, $this->job['placed'], true ) ) {
+							$this->place( 'plugins/' . $item, null, $content, $keep );
+						}
 					}
-					self::move( $stage . '/' . $name . '/' . $item, $content . '/' . $name . '/' . $item );
-					$this->job['placed'][] = $name . '/' . $item;
 				}
 				continue;
 			}
 			if ( 'mu-plugins' === $name && is_dir( $content . '/mu-plugins' ) ) {
-				foreach ( (array) scandir( $stage . '/mu-plugins' ) as $mu ) {
-					if ( '.' !== $mu && '..' !== $mu && ! file_exists( $content . '/mu-plugins/' . $mu ) ) {
-						self::move( $stage . '/mu-plugins/' . $mu, $content . '/mu-plugins/' . $mu );
-						$this->job['placed'][] = 'mu-plugins/' . $mu;
+				foreach ( self::children( $stage . '/mu-plugins' ) as $mu ) {
+					if ( ! file_exists( $content . '/mu-plugins/' . $mu ) ) {
+						$this->place( 'mu-plugins/' . $mu, $stage, $content, $keep );
 					}
 				}
 				continue;
 			}
-			if ( file_exists( $content . '/' . $name ) ) {
-				self::move( $content . '/' . $name, $keep . '/' . $name );
-			}
-			self::move( $stage . '/' . $name, $content . '/' . $name );
-			$this->job['placed'][] = $name;
+			$this->place( $name, $stage, $content, $keep );
 		}
 		self::rmdir( $stage );
+	}
+
+	/**
+	 * Puts one entry in place: the live one into the copy, then the staged
+	 * one, if any, where it was. Written down before either move, and each
+	 * move made only while its source is still there, so a slice stopped
+	 * between them leaves the next slice, or Put the copy back, to finish.
+	 *
+	 * @param string      $p       The entry's path in the content directory.
+	 * @param string|null $stage   The staging directory; null to only put the live entry aside.
+	 * @param string      $content The content directory.
+	 * @param string      $keep    The copy's directory.
+	 */
+	private function place( $p, $stage, $content, $keep ) {
+		if ( ! in_array( $p, $this->job['placed'], true ) ) {
+			$this->job['placed'][] = $p;
+			$this->save();
+		}
+		$l = $content . '/' . $p;
+		$a = $keep . '/' . $p;
+		$s = null === $stage ? '' : $stage . '/' . $p;
+		if ( file_exists( $l ) && ! file_exists( $a ) ) {
+			wp_mkdir_p( dirname( $a ) );
+			self::move( $l, $a );
+		} elseif ( file_exists( $l ) && '' !== $s && file_exists( $s ) ) {
+			// Made again after the live one went aside, as WordPress makes a
+			// missing uploads directory: it goes beside the copy.
+			self::move( $l, $a . '.' . $this->job['id'] );
+		}
+		if ( '' !== $s && file_exists( $s ) ) {
+			wp_mkdir_p( dirname( $l ) );
+			self::move( $s, $l );
+		}
+		/**
+		 * Fires after one entry of a restore is in place, mid-swap.
+		 *
+		 * @param string $p The entry's path in the content directory.
+		 */
+		do_action( 'safegrd_restore_placed', $p );
 	}
 
 	/** What a swapped-in restore leaves: caches cleared, the record, the log. */
@@ -1397,6 +1539,7 @@ final class SafeGrd_Restore {
 	 * @return bool Whether the whole download is written.
 	 */
 	private function write_archive() {
+		$this->open_reader();
 		$path = $this->out_path();
 		clearstatcache( true, $path );
 		if ( is_file( $path ) && filesize( $path ) > $this->job['out_bytes'] ) {
@@ -1672,6 +1815,48 @@ final class SafeGrd_Restore {
 			self::rmdir( $this->content_dir() . '/' . $job['staging'] );
 			self::drop_tables();
 			$message .= ' This site is as it was.';
+		} else {
+			// Stopped mid-swap: what moved is written down, so Put the copy
+			// back can return the site to how it was. Tables whose temporary
+			// copy is still there never moved: the RENAME moves all or none.
+			$db    = $this->db();
+			$moved = array();
+			$drop  = array();
+			foreach ( (array) ( $job['tables_in'] ?? array() ) as $suffix ) {
+				if ( $this->table_exists( $db, $job['tmp'] . $suffix ) ) {
+					$drop[] = '`' . $job['tmp'] . $suffix . '`';
+				} else {
+					$moved[] = $suffix;
+				}
+			}
+			if ( $drop ) {
+				$db->query( 'DROP TABLE IF EXISTS ' . implode( ',', $drop ) );
+			}
+			self::rmdir( $this->content_dir() . '/' . $job['staging'] );
+			self::drop_tables();
+			update_option(
+				self::LAST,
+				array(
+					'snapshot_id' => $job['snapshot_id'],
+					'source_url'  => $job['source_url'] ?? '',
+					'taken_at'    => $job['taken_at'] ?? '',
+					'restored_at' => gmdate( 'c' ),
+					'components'  => $job['components'] ?? SafeGrd_Site::COMPONENTS,
+					'items'       => (array) ( $job['items'] ?? array() ),
+					'tables'      => count( $moved ),
+					'rows'        => 0,
+					'files'       => (int) ( $job['files'] ?? 0 ),
+					'aside'       => $job['aside'],
+					'aside_dir'   => $job['aside_dir'],
+					'tables_in'   => $moved,
+					'placed'      => (array) ( $job['placed'] ?? array() ),
+					'undone'      => false,
+					'partial'     => $message,
+					'notes'       => array(),
+				),
+				false
+			);
+			$message .= ' The site is part restored: Put the copy back, or wp safegrd restore --undo, returns it to how it was.';
 		}
 		update_option(
 			self::FAILED,
@@ -1721,7 +1906,6 @@ final class SafeGrd_Restore {
 		$swap    = 'sgu' . substr( bin2hex( random_bytes( 3 ) ), 0, 6 ) . '_';
 		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
 		$keep    = $content . '/' . $last['aside_dir'];
-		$mine    = basename( dirname( SAFEGRD_FILE ) );
 		try {
 			$exists = function ( $name ) use ( $db ) {
 				$r = $db->query( "SHOW TABLES LIKE '" . $db->real_escape_string( addcslashes( $name, '_%\\' ) ) . "'" );
@@ -1763,7 +1947,7 @@ final class SafeGrd_Restore {
 				}
 			}
 			$maintenance = ABSPATH . '.maintenance';
-			$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
+			$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . ( time() - self::MAINTENANCE_LEFT ) . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
 			try {
 				if ( $renames && false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
 					throw new SafeGrd_Exception( esc_html( 'The database refused to put the tables back: ' . $db->error . '. Nothing was changed.' ), 'other' );
@@ -1771,11 +1955,6 @@ final class SafeGrd_Restore {
 				foreach ( (array) $last['placed'] as $p ) {
 					$l = $content . '/' . $p;
 					$a = $keep . '/' . $p;
-					// This plugin stays the running copy, wherever the plugins
-					// directory it sits in goes.
-					if ( 'plugins' === $p && is_dir( $l . '/' . $mine ) && is_dir( $a ) && ! file_exists( $a . '/' . $mine ) ) {
-						self::move( $l . '/' . $mine, $a . '/' . $mine );
-					}
 					if ( file_exists( $l ) && file_exists( $a ) ) {
 						self::move( $l, $l . '.' . rtrim( $swap, '_' ) );
 						self::move( $a, $l );

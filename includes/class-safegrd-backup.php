@@ -29,6 +29,24 @@ final class SafeGrd_Backup {
 	const READ_BYTES = 1048576;
 	/** A slice that fails on storage is tried this many times before the run fails. */
 	const ATTEMPTS = 3;
+	/** Slices the host may stop at one point of a run before it fails. */
+	const DEATHS = 3;
+	/**
+	 * What the slice under way is doing that may outlast a request: the
+	 * dump, or a large file. Kept apart from the job, which is saved only at
+	 * points whose blobs are all stored.
+	 */
+	const DOING = 'safegrd_backup_doing';
+	/** A file at least this large is named in DOING while it is read. */
+	const LARGE_FILE = 16777216;
+
+	/**
+	 * Whether take_lock() took a lock left behind: a slice that ends, even by
+	 * an error, releases it, so one left behind is a slice the host stopped.
+	 *
+	 * @var bool
+	 */
+	public static $took_stale = false;
 
 	/**
 	 * Directories under the content directory that are not the site:
@@ -69,6 +87,8 @@ final class SafeGrd_Backup {
 	private $in_pack = array();
 	/** @var array|null The file being written. */
 	private $file;
+	/** @var array path => the cache's row or null, for the directory being read. */
+	private $seen = array();
 
 	/**
 	 * @param callable|null $say    Receives one line of progress at a time.
@@ -164,6 +184,9 @@ final class SafeGrd_Backup {
 					'finish'   => 'writing the snapshot',
 				);
 				$this->say( sprintf( 'Continuing %s, %s', $this->job['snapshot_id'], $doing[ $this->job['stage'] ] ?? $this->job['stage'] ) );
+				if ( self::$took_stale ) {
+					$this->note_death();
+				}
 			} else {
 				$this->start();
 			}
@@ -181,6 +204,7 @@ final class SafeGrd_Backup {
 			$run = $this->finish();
 			SafeGrd_Log::finish( $run['snapshot_id'], 'backup', $run['snapshot_id'], 'completed' );
 			delete_option( self::JOB );
+			delete_option( self::DOING );
 			SafeGrd_Scheduler::continue_cancel();
 			SafeGrd_Settings::record_run( $run );
 			return $run;
@@ -318,6 +342,7 @@ final class SafeGrd_Backup {
 		$this->job['slices']++;
 		if ( 'database' === $this->job['stage'] ) {
 			$this->say( 'Dumping the database' );
+			update_option( self::DOING, 'dumping the database, which has to be read in one request to stay one consistent snapshot', false );
 			// A dump a stopped slice began is done again from the start.
 			SafeGrd_Repo_Cache::forget_run( $this->job['epoch_id'], $this->job['run_id'] );
 			$this->job['db'] = ( new SafeGrd_Dumper( $this ) )->run();
@@ -329,6 +354,7 @@ final class SafeGrd_Backup {
 				$rows += $t['rows'];
 			}
 			$this->say( sprintf( 'Dumped %d tables, %d rows', count( $this->job['db']['tables'] ), $rows ) );
+			delete_option( self::DOING );
 			$this->job['stage'] = 'files';
 			$this->checkpoint();
 			$this->save_job();
@@ -562,6 +588,15 @@ final class SafeGrd_Backup {
 			return true;
 		}
 		sort( $names, SORT_STRING );
+		// What earlier runs saw of this directory, in one query rather than
+		// one a file.
+		$paths = array();
+		foreach ( $names as $name ) {
+			if ( '.' !== $name && '..' !== $name ) {
+				$paths[] = $rel . '/' . $name;
+			}
+		}
+		$this->seen = array_merge( $this->seen, SafeGrd_Repo_Cache::files( $this->job['epoch_id'], $paths ) );
 		foreach ( $names as $name ) {
 			if ( '.' === $name || '..' === $name ) {
 				continue;
@@ -606,6 +641,10 @@ final class SafeGrd_Backup {
 				return false;
 			}
 		}
+		// What is left are its directories and what was left out.
+		foreach ( $paths as $p ) {
+			unset( $this->seen[ $p ] );
+		}
 		return true;
 	}
 
@@ -629,7 +668,12 @@ final class SafeGrd_Backup {
 		$mtime = (int) $stat['mtime'];
 		$inode = (int) $stat['ino'];
 		$mode  = (int) $stat['mode'] & 07777;
-		$row   = SafeGrd_Repo_Cache::file( $this->job['epoch_id'], $rel );
+		if ( array_key_exists( $rel, $this->seen ) ) {
+			$row = $this->seen[ $rel ];
+			unset( $this->seen[ $rel ] );
+		} else {
+			$row = SafeGrd_Repo_Cache::file( $this->job['epoch_id'], $rel );
+		}
 		if ( $row && (int) $row['size'] === $size && (int) $row['mtime'] === $mtime && (int) $row['inode'] === $inode ) {
 			$this->rows[]          = array(
 				'path'    => $rel,
@@ -648,19 +692,27 @@ final class SafeGrd_Backup {
 				$this->job['cursor']    = $rel;
 				return true;
 			}
+			if ( $size >= self::LARGE_FILE ) {
+				update_option( self::DOING, sprintf( 'reading %s (%s), which has to be read in one request', substr( $rel, 6 ), size_format( $size, 1 ) ), false );
+			}
 			$this->begin_file( $rel, $mode, $mtime, $inode );
 			$left = $size;
 			while ( $left > 0 ) {
 				$buf = fread( $fh, min( self::READ_BYTES, $left ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread
 				if ( false === $buf || '' === $buf ) {
-					$buf                    = str_repeat( "\0", $left );
-					$this->job['skipped'][] = substr( $rel, 6 ) . ' (changed while it was read)';
+					// Shorter than it was a moment ago: what was read is what
+					// is kept. Padding it would store a file that never was.
+					$this->job['skipped'][] = sprintf( '%s (changed while it was read: %d of %d bytes kept)', substr( $rel, 6 ), $size - $left, $size );
+					break;
 				}
 				$this->write( $buf );
 				$left -= strlen( $buf );
 			}
 			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 			$this->end_file();
+			if ( $size >= self::LARGE_FILE ) {
+				delete_option( self::DOING );
+			}
 		}
 		$this->job['files']++;
 		$this->job['file_bytes'] += $size;
@@ -1066,6 +1118,7 @@ final class SafeGrd_Backup {
 		}
 		$snapshot_id = is_array( $this->job ) ? $this->job['snapshot_id'] : '';
 		delete_option( self::JOB );
+		delete_option( self::DOING );
 		SafeGrd_Scheduler::continue_cancel();
 		return $this->record_failure( SafeGrd_Exception::text( $e ), $reason, $snapshot_id );
 	}
@@ -1117,6 +1170,43 @@ final class SafeGrd_Backup {
 		}
 		SafeGrd_Settings::record_run( $run );
 		return $run;
+	}
+
+	/**
+	 * Counts a slice the host stopped. Stopped again at the same point, with
+	 * nothing saved since, the run cannot get past it in a request: after
+	 * DEATHS times it fails, saying what it was doing.
+	 *
+	 * @throws SafeGrd_Exception When the run has to fail.
+	 */
+	private function note_death() {
+		$at = $this->job['stage'] . '|' . (string) $this->job['cursor'] . '|' . ( empty( $this->job['finishing'] ) ? '' : 'finish' );
+		if ( ( $this->job['died_at'] ?? '' ) === $at ) {
+			$this->job['deaths'] = (int) ( $this->job['deaths'] ?? 0 ) + 1;
+		} else {
+			$this->job['died_at'] = $at;
+			$this->job['deaths']  = 1;
+		}
+		$this->save_job();
+		$doing = (string) get_option( self::DOING, '' );
+		if ( '' === $doing ) {
+			$doing = 'files' === $this->job['stage'] && null !== $this->job['cursor'] ? 'reading the files after ' . substr( $this->job['cursor'], 6 ) : 'writing the snapshot';
+		}
+		$this->say( sprintf( 'Warning: the host stopped the last slice before it finished, while %s (%d of %d times at this point).', $doing, $this->job['deaths'], self::DEATHS ) );
+		if ( $this->job['deaths'] >= self::DEATHS ) {
+			delete_option( self::DOING );
+			throw new SafeGrd_Exception(
+				esc_html(
+					sprintf(
+						'The host stopped the backup %d times at the same point, while %s. A request here may run %s. Run the backup from the server\'s cron, where PHP has no time limit: wp safegrd backup.',
+						$this->job['deaths'],
+						$doing,
+						0 === (int) ini_get( 'max_execution_time' ) ? 'as long as the host allows' : (int) ini_get( 'max_execution_time' ) . ' seconds'
+					)
+				),
+				'other'
+			);
+		}
 	}
 
 	private function progress( $status ) {
@@ -1218,6 +1308,7 @@ final class SafeGrd_Backup {
 	 */
 	public static function take_lock( $budget ) {
 		global $wpdb;
+		self::$took_stale = false;
 		$now   = time();
 		$value = (string) ( $now + self::stale_seconds( $budget ) );
 		$took  = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $wpdb->options, self::LOCK, $value ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- a lock needs one atomic statement; the options API has none.
@@ -1233,6 +1324,7 @@ final class SafeGrd_Backup {
 		if ( 1 !== $took ) {
 			return false;
 		}
+		self::$took_stale = null !== $held;
 		// The slice reads the job the last slice saved, in whichever request
 		// that ran, not this request's cached copy.
 		wp_cache_delete( self::JOB, 'options' );

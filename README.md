@@ -145,12 +145,18 @@ it. A host that stops a request stops one slice, and the next resumes from the l
 Nothing secret is saved between slices: each pack is sealed and uploaded before its slice ends.
 
 Two things still have to fit in one slice's request: the database dump, so that it stays one
-consistent snapshot, and the largest single file. When a host stops either, the run is recorded
-as failed with the reason. Run it from the server's cron instead, where PHP has no time limit:
+consistent snapshot, and the largest single file. A slice the host stops starts again from the
+last saved point; stopped three times at the same point, the run is recorded as failed, naming
+the dump or the file. Run it from the server's cron instead, where PHP has no time limit:
 
 ```
 17 3 * * * cd /var/www/html && wp safegrd backup --quiet
 ```
+
+A restore runs the same way. A slice stopped while loading a table loads that table again from
+its start. One stopped while swapping the restored site in is finished by the next slice, from
+where it got to; the maintenance page it leaves lasts a minute. A restore that fails part way
+through the swap can be put back.
 
 ## Settings in wp-config.php
 

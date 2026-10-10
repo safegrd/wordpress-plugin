@@ -428,6 +428,29 @@ final class SafeGrd_Repo_Cache {
 		return $row ? $row : null;
 	}
 
+	/**
+	 * The rows of many paths from earlier runs of this epoch, in a query per
+	 * 500: path => row, or null for a path it has not seen.
+	 */
+	public static function files( $epoch_id, array $paths ) {
+		global $wpdb;
+		$out    = array_fill_keys( $paths, null );
+		$hashes = array();
+		foreach ( $paths as $p ) {
+			$hashes[ hash( 'sha256', $p ) ] = $p;
+		}
+		foreach ( array_chunk( array_keys( $hashes ), 500 ) as $chunk ) {
+			$in   = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT path_hash,size,mtime,inode,mode,sha256,blobs FROM %i WHERE epoch_id = %s AND path_hash IN ($in)", array_merge( array( self::files_table(), $epoch_id ), $chunk ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- the plugin's own table, which only this plugin reads and writes; $in is one %s per hash, passed in the array.
+			foreach ( (array) $rows as $r ) {
+				$path = $hashes[ $r['path_hash'] ];
+				unset( $r['path_hash'] );
+				$out[ $path ] = $r;
+			}
+		}
+		return $out;
+	}
+
 	/** Records the files this run saw, many at a time. */
 	public static function put_files( $epoch_id, $run_id, array $rows ) {
 		global $wpdb;

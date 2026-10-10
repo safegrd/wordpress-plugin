@@ -524,6 +524,9 @@ final class SafeGrd_Admin {
 		foreach ( (array) $last['notes'] as $note ) {
 			$s .= '<p class="description">' . esc_html( $note ) . '</p>';
 		}
+		if ( ! empty( $last['partial'] ) && empty( $last['undone'] ) ) {
+			$s .= '<p class="safegrd-warn"><strong>It stopped part way through swapping the restored site in:</strong> ' . esc_html( $last['partial'] ) . ' Put the copy back to return the site to how it was.</p>';
+		}
 		if ( ! empty( $last['aside'] ) ) {
 			$users = in_array( 'users', (array) ( $last['tables_in'] ?? array() ), true );
 			if ( ! empty( $last['undone'] ) ) {

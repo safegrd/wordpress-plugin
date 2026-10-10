@@ -158,6 +158,14 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 * Logs mark a run that stopped without finishing as stopped.
 * wp safegrd snapshots --site and --format=json, wp safegrd logs, and wp safegrd status shows the last test restore.
 * Reading what a backup holds takes a third of the requests it did.
+* A backup or restore the host stops three times at the same point fails, saying what it was doing, instead of starting again for good.
+* A restore stopped while swapping the restored site in is finished by the next slice, and one that fails there can be put back. Before, the site stayed half swapped and backups were refused.
+* A restore stopped while loading a table loads it again from its start, instead of failing with "Duplicate entry".
+* A whole-plugins restore keeps this plugin in the plugins directory throughout.
+* The maintenance page a stopped swap leaves lasts a minute, not ten.
+* A file that shrinks while it is read is kept as read, not padded with zeros.
+* A restore checks the disk has room for the files it writes beside the site before it starts, as a full disk would take the running site down.
+* Restores read and write their list of files hundreds of rows at a time, and backups look up a directory's files in one query.
 
 = 0.1.5 =
 * A restore or a download of a site with thousands of files waits when SafeGrd asks it to slow down, instead of stopping with "Rate limit exceeded".

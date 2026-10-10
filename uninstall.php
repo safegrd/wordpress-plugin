@@ -12,6 +12,7 @@ delete_option( 'safegrd_settings' );
 delete_option( 'safegrd_last_run' );
 delete_option( 'safegrd_backup_lock' );
 delete_option( 'safegrd_job' );
+delete_option( 'safegrd_backup_doing' );
 delete_option( 'safegrd_repo' );
 delete_option( 'safegrd_cache_version' );
 delete_option( 'safegrd_slice_key' );
