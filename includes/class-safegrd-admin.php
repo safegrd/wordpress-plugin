@@ -275,7 +275,7 @@ final class SafeGrd_Admin {
 					<h2>Storage</h2>
 					<div class="safegrd-meter" id="safegrd-meter" hidden><span></span></div>
 					<p id="safegrd-storage">Asking SafeGrd...</p>
-					<p class="description">SafeGrd hosted storage, locked against deletion: Object Lock in compliance mode keeps each backup until its date, and no one can delete it sooner.</p>
+					<p class="description">SafeGrd-hosted storage, locked against deletion: Object Lock in compliance mode keeps each backup until its date, and no one can delete it sooner.</p>
 					<p>
 						<?php if ( 'safegrd' === $custody ) : ?>
 							<strong>SafeGrd-managed key.</strong> SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
@@ -310,7 +310,7 @@ final class SafeGrd_Admin {
 			</div>
 			<div class="safegrd-card">
 				<h2>Downloads</h2>
-				<p class="description">A download is written on this server, decrypted, then fetched from this page. It is deleted from the server a day after it is written. The database is a gzipped SQL dump; files are a gzipped tar.</p>
+				<p class="description">A download is written on this server, decrypted, then fetched from this page. It is deleted from the server a day after it is written. The database is a gzipped SQL dump. Files are a gzipped tar.</p>
 				<div id="safegrd-downloads"><?php echo wp_kses_post( self::describe_downloads() ); ?></div>
 			</div>
 		</div>

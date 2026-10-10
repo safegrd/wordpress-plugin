@@ -12,7 +12,7 @@ Backs up the database and files, encrypted on your server, to storage locked aga
 
 == Description ==
 
-SafeGrd Backup backs up a WordPress site, its database, wp-config.php, .htaccess and wp-content, to SafeGrd's hosted storage. Each backup is encrypted on your server before it leaves, and the storage refuses to delete it before its date, whoever asks. SafeGrd then restores the newest backup on a schedule and checks what came back, so a backup that would not restore is found before you need it.
+SafeGrd Backup backs up a WordPress site, its database, wp-config.php, .htaccess and wp-content, to SafeGrd-hosted storage. Each backup is encrypted on your server before it leaves, and the storage refuses to delete it before its date, whoever asks. SafeGrd then restores the newest backup on a schedule and checks what came back, so a backup that would not restore is found before you need it.
 
 The free plan covers one site. What each plan includes is at https://safegrd.dev/pricing.
 
@@ -117,7 +117,7 @@ A backup runs in slices of a few seconds and uploads only what changed since the
 
 = Where are the backups stored? =
 
-In SafeGrd's hosted storage, encrypted on your server first, and locked against deletion until each backup's date. Nobody can read them without the key, and nobody can delete them early.
+In SafeGrd-hosted storage, encrypted on your server first, and locked against deletion until each backup's date. Nobody can read them without the key, and nobody can delete them early.
 
 = Is WooCommerce backed up? =
 

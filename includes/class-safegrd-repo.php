@@ -570,7 +570,7 @@ final class SafeGrd_Repo_Client {
 			}
 		}
 		if ( '' !== $last ) {
-			throw new SafeGrd_Exception( esc_html( sprintf( 'Hosted storage: uploading %s %s failed: %s', $kind, $name, $last ) ), 'storage' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'Hosted storage: could not upload %s %s: %s', $kind, $name, $last ) ), 'storage' );
 		}
 		$this->call( 'POST', '/epochs/' . rawurlencode( $epoch_id ) . '/uploaded', array( 'keys' => array( $slot['key'] ) ) );
 		return $slot['key'];

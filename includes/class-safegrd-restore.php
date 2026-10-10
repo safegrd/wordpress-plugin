@@ -898,7 +898,7 @@ final class SafeGrd_Restore {
 				$r    = $db->query( 'SELECT COUNT(*) FROM `' . $name . '`' );
 				$got  = $r ? (int) $r->fetch_row()[0] : -1;
 				if ( $got !== (int) $t['row_count'] ) {
-					throw new SafeGrd_Exception( esc_html( sprintf( '%s loaded %d rows; the backup recorded %d. Nothing was restored.', $t['table_name'], $got, $t['row_count'] ) ), 'other' );
+					throw new SafeGrd_Exception( esc_html( sprintf( '%s loaded %d rows, but the backup recorded %d. Nothing was restored.', $t['table_name'], $got, $t['row_count'] ) ), 'other' );
 				}
 			}
 			$this->say( sprintf( 'Loaded %d tables, %d rows, each matching the backup', count( $this->job['manifest']['tables'] ), $this->job['manifest']['rows'] ) );
@@ -965,7 +965,7 @@ final class SafeGrd_Restore {
 		}
 		foreach ( $sqls as $sql ) {
 			if ( false === $db->query( $sql ) ) {
-				throw new SafeGrd_Exception( esc_html( 'Renaming the prefixed rows failed: ' . $db->error ), 'other' );
+				throw new SafeGrd_Exception( esc_html( 'Could not rename the rows that carry the table prefix: ' . $db->error ), 'other' );
 			}
 		}
 	}
@@ -1020,7 +1020,7 @@ final class SafeGrd_Restore {
 				$after = null === $this->job['pk'] ? '' : " AND `$key` > '" . $db->real_escape_string( (string) $this->job['pk'] ) . "'";
 				$res   = $db->query( 'SELECT `' . $key . '`,`' . implode( '`,`', $cols ) . '` FROM `' . $name . "` WHERE ($where)$after ORDER BY `$key` LIMIT " . self::URL_BATCH );
 				if ( ! $res ) {
-					throw new SafeGrd_Exception( esc_html( 'Reading ' . $suffix . ' to replace the site URL failed: ' . $db->error ), 'other' );
+					throw new SafeGrd_Exception( esc_html( 'Could not read ' . $suffix . ' to replace the site URL: ' . $db->error ), 'other' );
 				}
 				$n = 0;
 				// A batch and its saved place go together, near enough: a
@@ -1040,7 +1040,7 @@ final class SafeGrd_Restore {
 						}
 					}
 					if ( $set && false === $db->query( 'UPDATE `' . $name . '` SET ' . implode( ',', $set ) . " WHERE `$key` = '" . $db->real_escape_string( (string) $row[ $key ] ) . "'" ) ) {
-						throw new SafeGrd_Exception( esc_html( 'Replacing the site URL in ' . $suffix . ' failed: ' . $db->error ), 'other' );
+						throw new SafeGrd_Exception( esc_html( 'Could not replace the site URL in ' . $suffix . ': ' . $db->error ), 'other' );
 					}
 					$this->job['pk'] = $row[ $key ];
 				}

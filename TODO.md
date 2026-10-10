@@ -1,7 +1,7 @@
 # TODO
 
 Known gaps in how backups and restores recover from a slice the host stops. None of them
-loses a backup; each says what breaks and when.
+loses a backup. Each says what breaks and when.
 
 ## Put the copy back has no resume
 

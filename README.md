@@ -34,7 +34,7 @@ wp safegrd status
 - **SafeGrd-managed key** (default): SafeGrd keeps your key sealed and releases it only to your
   enrolled hosts, so you can restore even after losing this site. SafeGrd's test restores use it.
 - **Customer-managed key**: only you can decrypt these backups. The key is shown once, when the
-  site connects; keep a copy somewhere safe. The site stores only its public half.
+  site connects. Keep a copy somewhere safe. The site stores only its public half.
 
 The site never stores a private key or your personal access token. It keeps a node token that
 backs up this site only.
@@ -90,7 +90,7 @@ before *Restore now*. The same page restores a site over itself.
 - *Some plugins only*, *Some themes only* and *Some tables only* list what the backup holds, with
   the version of each plugin and theme in the backup beside the one installed now. Tick some to
   restore only those: each replaces its own directory or table, and every other one stays.
-  Restoring the users table brings the backup's users with it; any other table leaves the
+  Restoring the users table brings the backup's users with it. Any other table leaves the
   sign-in as it is.
 - *Download as a file* writes the one part ticked, or the plugins, themes or tables chosen in
   it.
@@ -104,7 +104,7 @@ wp safegrd restore snap-... --plugins=akismet --yes
 wp safegrd restore snap-... --tables=wp_posts,wp_postmeta --yes
 wp safegrd restore --undo                        # put back what the last restore replaced
 wp safegrd restore --delete-copy                 # or --delete-older for earlier restores' copies
-wp safegrd logs                                  # the last runs; wp safegrd logs <run> prints one
+wp safegrd logs                                  # the last runs (wp safegrd logs <run> prints one)
 ```
 
 ## Before updates
@@ -140,13 +140,13 @@ Full steps: [safegrd.dev/docs/surfaces/wordpress](https://safegrd.dev/docs/surfa
 
 A backup runs in slices of a few seconds, each its own request: a third of the host's
 `max_execution_time`, at most 25 seconds. Each slice uploads what it read, saves where it got to,
-and starts the next with a request to the site itself; a WP-Cron event a minute out stands behind
+and starts the next with a request to the site itself. A WP-Cron event a minute out stands behind
 it. A host that stops a request stops one slice, and the next resumes from the last saved point.
 Nothing secret is saved between slices: each pack is sealed and uploaded before its slice ends.
 
 Two things still have to fit in one slice's request: the database dump, so that it stays one
 consistent snapshot, and the largest single file. A slice the host stops starts again from the
-last saved point; stopped three times at the same point, the run is recorded as failed, naming
+last saved point. Stopped three times at the same point, the run is recorded as failed, naming
 the dump or the file. Run it from the server's cron instead, where PHP has no time limit:
 
 ```
@@ -155,7 +155,7 @@ the dump or the file. Run it from the server's cron instead, where PHP has no ti
 
 A restore runs the same way. A slice stopped while loading a table loads that table again from
 its start. One stopped while swapping the restored site in is finished by the next slice, from
-where it got to; the maintenance page it leaves lasts a minute. A restore that fails part way
+where it got to, and the maintenance page it leaves lasts a minute. A restore that fails part way
 through the swap can be put back.
 
 ## Settings in wp-config.php
@@ -170,7 +170,7 @@ through the swap can be put back.
 
 `.wordpress-org/` holds the wordpress.org listing: the banner (`banner.svg` is the source,
 rendered with `rsvg-convert`), the icon (SafeGrd's brand mark) and the screenshots, numbered as the `== Screenshots ==` lines in
-`readme.txt`. They are not in the zip; they go to the SVN `assets/` directory beside `trunk`.
+`readme.txt`. They are not in the zip: they go to the SVN `assets/` directory beside `trunk`.
 
 `git config core.hooksPath .githooks` once per clone. The end-to-end test lives with the server's
 test suite and runs this plugin on the official WordPress image against a real server.

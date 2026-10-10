@@ -155,7 +155,7 @@ final class SafeGrd_Dumper {
 			if ( 'BASE TABLE' === $row[1] ) {
 				$out[] = $row[0];
 			} else {
-				$this->skipped[] = $row[0] . ' (a view; its definition is not backed up)';
+				$this->skipped[] = $row[0] . ' (a view: its definition is not backed up)';
 			}
 		}
 		$res->free();
@@ -212,7 +212,7 @@ final class SafeGrd_Dumper {
 
 		$res = $this->db->query( 'SELECT ' . $select . ' FROM ' . $qname . $where, MYSQLI_USE_RESULT );
 		if ( false === $res ) {
-			throw new SafeGrd_Exception( esc_html( sprintf( 'Reading %s failed: %s', $name, $this->db->error ) ), 'source' );
+			throw new SafeGrd_Exception( esc_html( sprintf( 'Could not read %s: %s', $name, $this->db->error ) ), 'source' );
 		}
 		$kinds = array();
 		foreach ( $res->fetch_fields() as $f ) {

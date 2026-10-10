@@ -255,7 +255,7 @@ final class SafeGrd_Repo_Reader {
 				break;
 			}
 		}
-		throw new SafeGrd_Exception( esc_html( 'Hosted storage: reading ' . $key . ' failed.' ), 'storage' );
+		throw new SafeGrd_Exception( esc_html( 'Hosted storage: could not read ' . $key . '.' ), 'storage' );
 	}
 
 	/** An object sealed as age(zstd(JSON)), decoded. */

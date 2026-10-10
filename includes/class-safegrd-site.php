@@ -30,7 +30,7 @@ final class SafeGrd_Site {
 			return 'This is a multisite network. The plugin backs up single sites, so nothing on this network is backed up.';
 		}
 		if ( ! function_exists( 'sodium_crypto_scalarmult' ) || ! function_exists( 'sodium_crypto_aead_chacha20poly1305_ietf_encrypt' ) ) {
-			return 'PHP on this host has no sodium extension, which the plugin encrypts with. PHP 7.2 and newer include it; ask your host to enable it.';
+			return 'PHP on this host has no sodium extension, which the plugin encrypts with. PHP 7.2 and newer include it. Ask your host to enable it.';
 		}
 		if ( ! function_exists( 'deflate_init' ) ) {
 			return 'PHP on this host has no zlib extension, which the plugin compresses with. Ask your host to enable it.';

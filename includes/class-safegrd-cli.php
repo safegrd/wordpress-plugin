@@ -87,7 +87,7 @@ final class SafeGrd_CLI {
 			WP_CLI::error( $done->get_error_message() );
 		}
 		WP_CLI::line( 'Connected this site as node ' . $done['node_id'] . '.' );
-		WP_CLI::line( '   Storage:  SafeGrd hosted storage' );
+		WP_CLI::line( '   Storage:  SafeGrd-hosted storage' );
 		if ( 'safegrd' === $done['key_custody'] ) {
 			WP_CLI::line( '   Custody:  SafeGrd-managed key' );
 			WP_CLI::line( '             SafeGrd keeps your key sealed and releases it only to your enrolled hosts,' );
@@ -582,8 +582,8 @@ final class SafeGrd_CLI {
 		if ( ! empty( $last['aside'] ) ) {
 			WP_CLI::line(
 				empty( $last['undone'] )
-					? sprintf( 'Restore:  %s restored; what it replaced is kept aside (--undo puts it back, --delete-copy deletes it)', $last['snapshot_id'] )
-					: sprintf( 'Restore:  %s put back; the restored version is kept aside (--undo restores it again, --delete-copy deletes it)', $last['snapshot_id'] )
+					? sprintf( 'Restore:  %s restored. What it replaced is kept aside: --undo puts it back, --delete-copy deletes it.', $last['snapshot_id'] )
+					: sprintf( 'Restore:  %s put back. The restored version is kept aside: --undo restores it again, --delete-copy deletes it.', $last['snapshot_id'] )
 			);
 		}
 	}
