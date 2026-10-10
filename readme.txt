@@ -137,10 +137,11 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 
 == Screenshots ==
 
-1. Tools, SafeGrd once connected: the last backup with its tables, rows, files and lock date, the next backup and how often, the last test restore, storage used against the plan, and the recent backups.
-2. Restore: every WordPress backup in the account, with what each holds, and the copy kept aside from the last restore until you delete it.
-3. Connecting: choose who keeps the encryption key, then press Connect, or connect with a token instead.
-4. Approving the sign-in in the tab that opens, with the code to check. The page refreshes periodically and finishes connecting once you approve.
+1. Tools, SafeGrd once connected: whether the site is protected, the last backup with its tables, rows, files and lock date, the next backup, the last test restore, storage used against the plan, and the recent backups, each with Open and its log.
+2. Restore & download: a backup opened, with each part's size and the WordPress and PHP versions. Some plugins only lists each plugin with the version in the backup beside the one installed, and the review says what will be replaced before anything starts.
+3. The Updates screen: how old the last backup is, with Back up now, and where to restore a plugin or theme if an update breaks the site.
+4. Connecting: choose who keeps the encryption key, then press Connect, or connect with a personal access token instead.
+5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
 

@@ -55,3 +55,13 @@ it was.
 
 Fix: name the file being read in `safegrd_backup_doing` for every file that takes more than a
 second to read, not only by size.
+
+## Disconnecting while a slice runs
+
+`SafeGrd_Connect::disconnect()` drops the cache tables while a backup slice may be using them.
+A slice writing its snapshot then reads an empty file list and fails with "The snapshot would
+name 1 blobs this site has no record of storing": the check refuses the snapshot, so nothing
+broken is stored, but the run fails for no reason the operator can see.
+
+Fix: take the slice lock in `disconnect()`, waiting a few seconds for the running slice, or
+refuse while a backup or restore is under way.
