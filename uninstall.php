@@ -18,6 +18,7 @@ delete_option( 'safegrd_slice_key' );
 delete_option( 'safegrd_backup_requested' );
 delete_option( 'safegrd_restore' );
 delete_option( 'safegrd_last_restore' );
+delete_option( 'safegrd_restore_failed' );
 delete_transient( 'safegrd_plans' );
 global $wpdb;
 $wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegrd_files' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.

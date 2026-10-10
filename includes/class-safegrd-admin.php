@@ -32,6 +32,8 @@ final class SafeGrd_Admin {
 		add_action( 'wp_ajax_safegrd_restore_items', array( __CLASS__, 'ajax_restore_items' ) );
 		add_action( 'wp_ajax_safegrd_restore_start', array( __CLASS__, 'ajax_restore_start' ) );
 		add_action( 'wp_ajax_safegrd_restore_delete_copy', array( __CLASS__, 'ajax_restore_delete_copy' ) );
+		add_action( 'wp_ajax_safegrd_restore_undo', array( __CLASS__, 'ajax_restore_undo' ) );
+		add_action( 'wp_ajax_safegrd_restore_delete_older', array( __CLASS__, 'ajax_restore_delete_older' ) );
 		add_filter( 'plugin_action_links_' . plugin_basename( SAFEGRD_FILE ), array( __CLASS__, 'action_links' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'update_notice' ) );
 	}
@@ -135,6 +137,8 @@ final class SafeGrd_Admin {
 				'ajax'     => admin_url( 'admin-ajax.php' ),
 				'server'   => SafeGrd_Settings::server_url(),
 				'nonce'    => wp_create_nonce( self::NONCE ),
+				'node'     => SafeGrd_Settings::get( 'node_id' ),
+				'site'     => home_url(),
 				// The page runs slices itself where the site cannot reach itself.
 				'loopback' => SafeGrd_Settings::connected() && '' === SafeGrd_Scheduler::loopback_problem(),
 			)
@@ -289,13 +293,19 @@ final class SafeGrd_Admin {
 		</div>
 
 		<div class="safegrd-panel" data-panel="restore" hidden>
+			<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
+			<div class="safegrd-card safegrd-backup" id="safegrd-backup" hidden></div>
 			<div class="safegrd-card">
-				<h2>Restore, migrate or download</h2>
-				<p>Restore any WordPress backup in this account onto this site, all of it or only some parts: the database, plugins, themes, uploads, and the rest of wp-content. Under <em>Choose plugins, themes or tables</em>, restore single ones, such as a plugin from before an update. What a restore replaces is kept aside until you delete it. <code>wp-config.php</code> stays this site's own.</p>
-				<p class="description">To migrate a site to a new host or domain, install WordPress and this plugin there, connect it to the same SafeGrd account, and restore the old site's backup with its database. The restore runs a search and replace from the old URL to the new one, serialized data included, and renames the tables to the new site's table prefix.</p>
-				<p class="description">Plugin and theme settings are in the database: restoring plugins alone brings back their files, not their settings.</p>
-				<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
+				<div class="safegrd-card-head">
+					<h2>Backups to restore from</h2>
+					<label class="safegrd-filter">Site <select id="safegrd-site-filter"></select></label>
+				</div>
+				<p class="description">Open a backup to see what it holds. Restore all of it, some parts, or single plugins, themes or tables, or download a part as a file. This site runs as it is until what you chose is loaded and checked, and what it replaces is kept so you can put it back.</p>
 				<div id="safegrd-restore-list"><p class="description">Asking SafeGrd...</p></div>
+				<details class="safegrd-more">
+					<summary>Moving a site to a new host or domain</summary>
+					<p class="description">Install WordPress and this plugin on the new host, connect it to the same SafeGrd account, then choose <em>All sites</em> above and restore the old site's backup with its database. The restore replaces the old address with the new one in the database, serialized data included, and renames the tables to this site's table prefix. <code>wp-config.php</code> stays this site's own.</p>
+				</details>
 				<p class="description">A backup taken with a customer-managed key restores and downloads with the safegrd command line tool and that key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
 			</div>
 			<div class="safegrd-card">
@@ -381,9 +391,9 @@ final class SafeGrd_Admin {
 			$s .= '<p class="safegrd-warn"><strong>The download of the ' . esc_html( $failed['component'] ) . ' of ' . esc_html( $failed['snapshot_id'] ) . ' failed:</strong> ' . esc_html( $failed['message'] ) . '</p>';
 		}
 		if ( ! $list ) {
-			return $s . '<p class="description">None. Choose a part of a backup under Restore, migrate or download.</p>';
+			return $s . '<p class="description">None. Open a backup above, tick one part, and press Download as a file.</p>';
 		}
-		$s .= '<table class="widefat striped"><thead><tr><th>File</th><th>Of</th><th>Size</th><th>Deleted</th><th></th></tr></thead><tbody>';
+		$s .= '<table class="widefat striped"><thead><tr><th>File</th><th>Of</th><th>Size</th><th>Expires</th><th></th></tr></thead><tbody>';
 		foreach ( $list as $id => $d ) {
 			$url = wp_nonce_url( admin_url( 'admin-post.php?action=safegrd_download&id=' . $id ), 'safegrd_download_' . $id );
 			$s  .= '<tr><td><a href="' . esc_url( $url ) . '">' . esc_html( $d['name'] ) . '</a></td>'
@@ -471,38 +481,69 @@ final class SafeGrd_Admin {
 	}
 
 	/**
-	 * The last restore, in HTML. A restore under way is described at the top
-	 * of the page instead.
+	 * The last restore, as a card of HTML: what it restored, and the copy
+	 * of what it replaced, with Put the copy back and Delete the copy. A
+	 * restore under way is described at the top of the page instead.
 	 */
 	public static function describe_restore() {
 		if ( SafeGrd_Restore::job() ) {
-			return '<p>' . ( 'download' === ( SafeGrd_Restore::job()['mode'] ?? '' ) ? 'A download is being written.' : 'A restore is under way.' ) . ' Its progress is at the top of this page.</p>';
+			return '<div class="safegrd-card"><p>' . ( 'download' === ( SafeGrd_Restore::job()['mode'] ?? '' ) ? 'A download is being written.' : 'A restore is under way.' ) . ' Its progress is at the top of this page.</p></div>';
 		}
-		$last = get_option( SafeGrd_Restore::LAST, array() );
-		if ( ! $last ) {
-			return '';
+		$last  = get_option( SafeGrd_Restore::LAST, array() );
+		$old   = SafeGrd_Restore::older_copies();
+		$older = '';
+		if ( $old['dirs'] || $old['tables'] ) {
+			$older = '<p class="description">Copies kept by earlier restores: ' . esc_html( self::count_of( count( $old['tables'] ), 'table' ) . ' and ' . self::count_of( count( $old['dirs'] ), 'directory' ) . ', ' . size_format( $old['bytes'], 1 ) ) . '. <button type="button" class="button-link safegrd-danger" id="safegrd-delete-older">Delete them</button></p>';
 		}
-		if ( ! empty( $last['failed'] ) ) {
-			return '<p class="safegrd-warn"><strong>The restore of ' . esc_html( $last['snapshot_id'] ) . ' failed:</strong> ' . esc_html( $last['failed'] ) . '</p>';
+		$failed = get_option( SafeGrd_Restore::FAILED, array() );
+		if ( ! empty( $failed['failed'] ) ) {
+			$older = '<p class="safegrd-warn"><strong>The restore of ' . esc_html( $failed['snapshot_id'] ) . ' failed</strong> ' . esc_html( self::when( $failed['restored_at'] ) ) . ': ' . esc_html( $failed['failed'] ) . '</p>' . $older;
+		}
+		if ( ! $last || ! empty( $last['failed'] ) ) {
+			return '' === $older ? '' : '<div class="safegrd-card"><h2>Last restore</h2>' . $older . '</div>';
 		}
 		$only = SafeGrd_Restore::describe_parts( (array) ( $last['components'] ?? SafeGrd_Site::COMPONENTS ), (array) ( $last['items'] ?? array() ) );
-		$s    = sprintf(
-			'<p><strong>Restored %s%s</strong> of %s on %s: %d tables, %d rows, %d files.</p>',
+		$s    = '<div class="safegrd-card"><h2>Last restore</h2>';
+		$counts = array();
+		if ( (int) $last['tables'] > 0 ) {
+			$counts[] = self::count_of( (int) $last['tables'], 'table' );
+			$counts[] = self::count_of( (int) $last['rows'], 'row' );
+		}
+		if ( (int) $last['files'] > 0 ) {
+			$counts[] = self::count_of( (int) $last['files'], 'file' );
+		}
+		$s .= sprintf(
+			'<p><strong>Restored %s</strong> from %s of %s, taken %s, on %s%s.</p>',
+			esc_html( '' === $only ? 'the whole site' : $only ),
 			esc_html( $last['snapshot_id'] ),
-			esc_html( '' === $only ? '' : ' (' . $only . ')' ),
 			esc_html( $last['source_url'] ),
+			esc_html( self::when( $last['taken_at'] ?? '' ) ),
 			esc_html( self::when( $last['restored_at'] ) ),
-			(int) $last['tables'],
-			(int) $last['rows'],
-			(int) $last['files']
+			esc_html( $counts ? ': ' . implode( ', ', $counts ) : '' )
 		);
 		foreach ( (array) $last['notes'] as $note ) {
 			$s .= '<p class="description">' . esc_html( $note ) . '</p>';
 		}
 		if ( ! empty( $last['aside'] ) ) {
-			$s .= '<p>The tables and files from before the restore are kept aside. <button type="button" class="button" id="safegrd-delete-copy">Delete the copy</button></p>';
+			$users = in_array( 'users', (array) ( $last['tables_in'] ?? array() ), true );
+			if ( ! empty( $last['undone'] ) ) {
+				$s .= '<p>Put back what it replaced on ' . esc_html( self::when( $last['undone_at'] ?? '' ) ) . '. The restored version is kept aside.</p>';
+				$s .= '<p><button type="button" class="button" id="safegrd-undo-restore" data-users="' . ( $users ? '1' : '' ) . '">Restore it again</button> <button type="button" class="button-link safegrd-danger" id="safegrd-delete-copy">Delete the restored version</button></p>';
+			} else {
+				$s .= '<p>What it replaced is kept aside. Put it back if the restore was not what you wanted, or delete it to free the space.</p>';
+				$s .= '<p><button type="button" class="button" id="safegrd-undo-restore" data-users="' . ( $users ? '1' : '' ) . '"' . ( isset( $last['placed'] ) ? '' : ' disabled title="Restores made by an older version of the plugin cannot be put back."' ) . '>Put the copy back</button> <button type="button" class="button-link safegrd-danger" id="safegrd-delete-copy">Delete the copy</button></p>';
+			}
+			if ( $users ) {
+				$s .= '<p class="description">This restore replaced the users table, so putting it back changes who can sign in, and ends this session.</p>';
+			}
 		}
-		return $s;
+		return $s . $older . '</div>';
+	}
+
+	/** "1 table", "3 tables". */
+	public static function count_of( $n, $what ) {
+		$many = 'y' === substr( $what, -1 ) ? substr( $what, 0, -1 ) . 'ies' : $what . 's';
+		return number_format_i18n( $n ) . ' ' . ( 1 === (int) $n ? $what : $many );
 	}
 
 	/**
@@ -573,11 +614,11 @@ final class SafeGrd_Admin {
 				return $s;
 			case 'completed':
 				$s = sprintf(
-					'<strong>Completed</strong> %s: %d tables, %d rows, %d files, %s uploaded in %ss.',
+					'<strong>Completed</strong> %s<br>%s, %s, %s<br>%s uploaded in %ss.',
 					esc_html( self::when_ago( $run['finished_at'] ) ),
-					(int) $run['tables'],
-					(int) $run['rows'],
-					(int) $run['files'],
+					esc_html( self::count_of( (int) $run['tables'], 'table' ) ),
+					esc_html( self::count_of( (int) $run['rows'], 'row' ) ),
+					esc_html( self::count_of( (int) $run['files'], 'file' ) ),
 					esc_html( size_format( (int) $run['bytes'], 1 ) ),
 					esc_html( (string) $run['seconds'] )
 				);
@@ -782,7 +823,11 @@ final class SafeGrd_Admin {
 				foreach ( ( isset( $snaps['items'] ) ? $snaps['items'] : $snaps ) as $s ) {
 					$out['snapshots'][] = array(
 						'id'      => $s['snapshot_id'] ?? '',
-						'status'  => $s['status'] ?? '',
+						'status'  => array(
+							'verified'  => 'Test-restored',
+							'completed' => 'Backed up',
+							'failed'    => 'Failed',
+						)[ $s['status'] ?? '' ] ?? ucfirst( (string) ( $s['status'] ?? '' ) ),
 						'created' => self::when( $s['created_at'] ?? '' ),
 						'size'    => size_format( (int) ( $s['encrypted_size_bytes'] ?? 0 ), 1 ),
 						'site'    => size_format( (int) ( $s['raw_size_bytes'] ?? 0 ), 1 ),
@@ -812,7 +857,7 @@ final class SafeGrd_Admin {
 						'%s %s: %s',
 						'passed' === ( $v['status'] ?? '' ) ? 'Passed' : 'Failed',
 						self::when( $v['completed_at'] ?? ( $v['started_at'] ?? '' ) ),
-						'passed' === ( $v['status'] ?? '' ) ? 'every table, file and attachment checked' : ( $v['error_message'] ?? '' )
+						'passed' === ( $v['status'] ?? '' ) ? 'every table, file and attachment checked.' : ( $v['error_message'] ?? '' )
 					);
 				} else {
 					$out['drill'] = 'None yet.';
@@ -875,9 +920,10 @@ final class SafeGrd_Admin {
 		self::guard();
 		// phpcs:disable WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 		$id   = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : '';
-		$part = isset( $_POST['part'] ) ? sanitize_key( wp_unslash( $_POST['part'] ) ) : '';
+		$part  = isset( $_POST['part'] ) ? sanitize_key( wp_unslash( $_POST['part'] ) ) : '';
+		$items = isset( $_POST['items'] ) ? json_decode( sanitize_text_field( wp_unslash( $_POST['items'] ) ), true ) : array();
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
-		$ok = SafeGrd_Restore::begin( $id, array( $part ), 'download' );
+		$ok = SafeGrd_Restore::begin( $id, array( $part ), 'download', is_array( $items ) ? $items : array() );
 		if ( is_wp_error( $ok ) ) {
 			wp_send_json_error( array( 'message' => $ok->get_error_message() ) );
 		}
@@ -905,11 +951,12 @@ final class SafeGrd_Admin {
 		}
 		$out = array();
 		foreach ( SafeGrd_Log::all() as $k => $r ) {
+			$status = SafeGrd_Log::status( $r );
 			$out[] = array(
 				'key'     => (string) $k,
 				'kind'    => ucfirst( $r['kind'] ),
 				'label'   => $r['label'],
-				'status'  => $r['status'],
+				'status'  => $status,
 				'started' => wp_date( 'Y-m-d H:i', (int) $r['started'] ),
 				'lines'   => count( $r['lines'] ),
 			);
@@ -947,7 +994,38 @@ final class SafeGrd_Admin {
 
 	public static function ajax_restore_delete_copy() {
 		self::guard();
-		wp_send_json_success( array( 'message' => SafeGrd_Restore::delete_copy() ) );
+		wp_send_json_success(
+			array(
+				'message' => SafeGrd_Restore::delete_copy(),
+				'restore' => self::describe_restore(),
+			)
+		);
+	}
+
+	/** Deletes the copies kept by restores before the last one. */
+	public static function ajax_restore_delete_older() {
+		self::guard();
+		wp_send_json_success(
+			array(
+				'message' => SafeGrd_Restore::delete_older_copies(),
+				'restore' => self::describe_restore(),
+			)
+		);
+	}
+
+	/** Puts back what the last restore replaced, or restores it again. */
+	public static function ajax_restore_undo() {
+		self::guard();
+		$r = SafeGrd_Restore::undo();
+		if ( is_wp_error( $r ) ) {
+			wp_send_json_error( array( 'message' => $r->get_error_message() ) );
+		}
+		wp_send_json_success(
+			array(
+				'message' => $r,
+				'restore' => self::describe_restore(),
+			)
+		);
 	}
 
 	public static function ajax_disconnect() {

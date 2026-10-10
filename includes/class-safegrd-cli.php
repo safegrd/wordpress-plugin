@@ -155,7 +155,21 @@ final class SafeGrd_CLI {
 	}
 
 	/**
-	 * Lists the backups of every WordPress site in this account that this site can restore.
+	 * Lists the WordPress backups in this account that this site can restore, newest first.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--site=<site>]
+	 * : this for this site's backups, all for every site's, or another site's node id or address.
+	 * ---
+	 * default: all
+	 * ---
+	 *
+	 * [--format=<format>]
+	 * : table or json.
+	 * ---
+	 * default: table
+	 * ---
 	 *
 	 * @when after_wp_load
 	 */
@@ -164,12 +178,66 @@ final class SafeGrd_CLI {
 		if ( is_wp_error( $list ) ) {
 			WP_CLI::error( $list->get_error_message() );
 		}
+		$site = (string) ( $assoc['site'] ?? 'all' );
+		$mine = SafeGrd_Settings::get( 'node_id' );
+		$list = array_values(
+			array_filter(
+				$list,
+				function ( $s ) use ( $site, $mine ) {
+					if ( 'all' === $site ) {
+						return true;
+					}
+					if ( 'this' === $site ) {
+						return $s['node_id'] === $mine;
+					}
+					return $s['node_id'] === $site || $s['site'] === $site || (string) wp_parse_url( $s['site'], PHP_URL_HOST ) === $site || (string) wp_parse_url( $s['site'], PHP_URL_HOST ) . ':' . wp_parse_url( $s['site'], PHP_URL_PORT ) === $site;
+				}
+			)
+		);
+		foreach ( $list as &$s ) {
+			$s['this_site'] = $s['node_id'] === $mine;
+		}
+		unset( $s );
+		if ( 'json' === ( $assoc['format'] ?? 'table' ) ) {
+			WP_CLI::line( (string) wp_json_encode( $list, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+			return;
+		}
 		if ( ! $list ) {
-			WP_CLI::line( 'No WordPress backups in this account yet.' );
+			WP_CLI::line( 'all' === $site ? 'No WordPress backups in this account yet.' : 'No backups of that site. wp safegrd snapshots lists every site\'s.' );
 			return;
 		}
 		foreach ( $list as $s ) {
-			WP_CLI::line( sprintf( '%s  %s  %s  %d tables, %d files, %s%s', $s['id'], substr( $s['taken'], 0, 16 ), $s['site'], $s['tables'], $s['files'], size_format( $s['size'], 1 ), $s['verified'] ? ', test-restored' : '' ) );
+			WP_CLI::line( sprintf( '%s  %s  %s  %d tables, %d files, %s%s', $s['id'], substr( $s['taken'], 0, 16 ), $s['this_site'] ? 'this site' : $s['site'], $s['tables'], $s['files'], size_format( $s['size'], 1 ), $s['verified'] ? ', test-restored' : '' ) );
+		}
+		WP_CLI::line( sprintf( 'Next: wp safegrd contents %s, then wp safegrd restore %s', $list[0]['id'], $list[0]['id'] ) );
+	}
+
+	/**
+	 * Lists the last backups, restores and downloads with how each ended, or prints one's log.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [<run>]
+	 * : The run to print: a snapshot id, or the key the list shows.
+	 *
+	 * @when after_wp_load
+	 */
+	public function logs( $args, $assoc ) {
+		if ( ! empty( $args[0] ) ) {
+			$text = SafeGrd_Log::text( $args[0] );
+			if ( '' === $text ) {
+				WP_CLI::error( 'No log is kept for ' . $args[0] . '. wp safegrd logs lists the ones kept.' );
+			}
+			WP_CLI::line( rtrim( $text ) );
+			return;
+		}
+		$runs = SafeGrd_Log::all();
+		if ( ! $runs ) {
+			WP_CLI::line( 'No logs yet. A backup, restore or download writes one.' );
+			return;
+		}
+		foreach ( $runs as $key => $r ) {
+			WP_CLI::line( sprintf( '%s  %-8s  %-10s  %s', gmdate( 'Y-m-d H:i', (int) $r['started'] ), $r['kind'], SafeGrd_Log::status( $r ), $key ) );
 		}
 	}
 
@@ -199,8 +267,14 @@ final class SafeGrd_CLI {
 	 * [--yes]
 	 * : Do not ask for confirmation.
 	 *
+	 * [--undo]
+	 * : Put back what the last restore replaced, from the copy it kept aside. The restored version is kept aside instead, so running it again restores it again.
+	 *
 	 * [--delete-copy]
 	 * : Delete the tables and files the last restore kept aside, and restore nothing.
+	 *
+	 * [--delete-older]
+	 * : Delete the copies kept by restores before the last one, and restore nothing.
 	 *
 	 * [--slice-seconds=<seconds>]
 	 * : How long each slice runs. Default: the same as a backup's.
@@ -208,6 +282,18 @@ final class SafeGrd_CLI {
 	 * @when after_wp_load
 	 */
 	public function restore( $args, $assoc ) {
+		if ( ! empty( $assoc['undo'] ) ) {
+			$r = SafeGrd_Restore::undo();
+			if ( is_wp_error( $r ) ) {
+				WP_CLI::error( $r->get_error_message() );
+			}
+			WP_CLI::success( $r );
+			return;
+		}
+		if ( ! empty( $assoc['delete-older'] ) ) {
+			WP_CLI::line( SafeGrd_Restore::delete_older_copies() );
+			return;
+		}
 		if ( ! empty( $assoc['delete-copy'] ) ) {
 			WP_CLI::line( SafeGrd_Restore::delete_copy() );
 			return;
@@ -260,7 +346,7 @@ final class SafeGrd_CLI {
 		foreach ( (array) $run['notes'] as $note ) {
 			WP_CLI::line( '   ' . $note );
 		}
-		WP_CLI::line( '   The replaced tables and files are kept aside. Delete them with: wp safegrd restore --delete-copy' );
+		WP_CLI::line( '   The replaced tables and files are kept aside. Put them back with wp safegrd restore --undo, or delete them with --delete-copy.' );
 		if ( ! empty( $run['users'] ) ) {
 			WP_CLI::line( '   Sign in with an administrator account of the restored site.' );
 		}
@@ -371,7 +457,7 @@ final class SafeGrd_CLI {
 		}
 		WP_CLI::line( 'Tables:' );
 		foreach ( $c['tables'] as $t ) {
-			WP_CLI::line( sprintf( '   %-40s %10d rows  %s', $t['name'], $t['rows'], size_format( $t['bytes'], 1 ) ) );
+			WP_CLI::line( sprintf( '   %-40s %10s  %s', $t['name'], number_format( $t['rows'] ) . ( 1 === $t['rows'] ? ' row ' : ' rows' ), size_format( $t['bytes'], 1 ) ) );
 		}
 		WP_CLI::line( sprintf( 'Restore one with: wp safegrd restore %s --plugins=<name> (or --themes, --tables)', $args[0] ) );
 	}
@@ -474,8 +560,31 @@ final class SafeGrd_CLI {
 			$line .= ' at ' . $run['finished_at'];
 		}
 		WP_CLI::line( $line );
+		if ( 'completed' === $run['status'] ) {
+			WP_CLI::line( sprintf( '          %d tables, %d rows, %d files, %s uploaded in %ss', (int) $run['tables'], (int) $run['rows'], (int) $run['files'], size_format( (int) $run['bytes'], 1 ), (string) $run['seconds'] ) );
+		}
 		if ( ! empty( $run['message'] ) ) {
 			WP_CLI::line( '          ' . $run['message'] );
+		}
+		$v = SafeGrd_Client::for_site()->call( 'GET', '/api/v1/verifications?node_id=' . rawurlencode( SafeGrd_Settings::get( 'node_id' ) ) . '&limit=1', null, 15 );
+		if ( is_wp_error( $v ) ) {
+			WP_CLI::warning( 'SafeGrd did not say how the last test restore went: ' . $v->get_error_message() );
+		} else {
+			$items = isset( $v['items'] ) ? $v['items'] : $v;
+			if ( ! $items ) {
+				WP_CLI::line( 'Test:     none yet' );
+			} else {
+				$t = $items[0];
+				WP_CLI::line( sprintf( 'Test:     %s %s%s', 'passed' === ( $t['status'] ?? '' ) ? 'passed' : 'failed', $t['completed_at'] ?? ( $t['started_at'] ?? '' ), 'passed' === ( $t['status'] ?? '' ) ? '' : ': ' . ( $t['error_message'] ?? '' ) ) );
+			}
+		}
+		$last = get_option( SafeGrd_Restore::LAST, array() );
+		if ( ! empty( $last['aside'] ) ) {
+			WP_CLI::line(
+				empty( $last['undone'] )
+					? sprintf( 'Restore:  %s restored; what it replaced is kept aside (--undo puts it back, --delete-copy deletes it)', $last['snapshot_id'] )
+					: sprintf( 'Restore:  %s put back; the restored version is kept aside (--undo restores it again, --delete-copy deletes it)', $last['snapshot_id'] )
+			);
 		}
 	}
 

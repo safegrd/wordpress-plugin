@@ -20,6 +20,8 @@ defined( 'ABSPATH' ) || exit;
 final class SafeGrd_Restore {
 	const JOB  = 'safegrd_restore';
 	const LAST = 'safegrd_last_restore';
+	/** The last restore that failed. Kept apart, so the copy of the last one that worked can still be put back. */
+	const FAILED = 'safegrd_restore_failed';
 	/** Downloads ready to fetch: id => {path, name, snapshot_id, component, bytes, created, expires}. */
 	const DOWNLOADS = 'safegrd_downloads';
 	/** How long a download stays on the server. */
@@ -413,9 +415,11 @@ final class SafeGrd_Restore {
 	 * SafeGrd's record of the snapshot and the snapshot object itself, with
 	 * the reader open on its month and every index it names loaded.
 	 *
+	 * @param bool $own_run Load only the index of the run that wrote the
+	 *                      snapshot, which holds its manifest and root tree.
 	 * @return array{0:array,1:array}
 	 */
-	private function open_snapshot() {
+	private function open_snapshot( $own_run = false ) {
 		$rec = $this->client->call( 'GET', '/api/v1/snapshots/' . rawurlencode( $this->job['snapshot_id'] ), null, 30 );
 		if ( is_wp_error( $rec ) ) {
 			throw new SafeGrd_Exception( esc_html( 'SafeGrd has no record of ' . $this->job['snapshot_id'] . ': ' . $rec->get_error_message() ), 'other' );
@@ -446,7 +450,7 @@ final class SafeGrd_Restore {
 		if ( ( $snap['snapshot_id'] ?? '' ) !== $this->job['snapshot_id'] ) {
 			throw new SafeGrd_Exception( esc_html( 'The snapshot object names another snapshot.' ), 'other' );
 		}
-		$this->reader->load_index( $snap );
+		$this->reader->load_index( $snap, $own_run && ! empty( $snap['run_id'] ) ? array( $snap['run_id'] ) : null );
 		return array( $rec, $snap );
 	}
 
@@ -1230,8 +1234,14 @@ final class SafeGrd_Restore {
 	/** The tables and the files, swapped in while the site is in maintenance. */
 	private function swap_in( $db, $tables, $tmp, $aside, $live, $src, $content ) {
 		$renames = array();
+		// What this restore puts in place, so it can be put back: the tables
+		// by their name after the prefix, the files by their path in the
+		// content directory.
+		$this->job['tables_in'] = array();
+		$this->job['placed']    = array();
 		foreach ( $tables ? $this->job['manifest']['tables'] : array() as $t ) {
-			$suffix = substr( $t['table_name'], strlen( $src ) );
+			$suffix                   = substr( $t['table_name'], strlen( $src ) );
+			$this->job['tables_in'][] = $suffix;
 			$r      = $db->query( "SHOW TABLES LIKE '" . $db->real_escape_string( addcslashes( $live . $suffix, '_%\\' ) ) . "'" );
 			if ( $r && $r->num_rows ) {
 				$renames[] = "`{$live}{$suffix}` TO `{$aside}{$suffix}`";
@@ -1270,6 +1280,7 @@ final class SafeGrd_Restore {
 						self::move( $content . '/' . $name . '/' . $item, $keep . '/' . $name . '/' . $item );
 					}
 					self::move( $stage . '/' . $name . '/' . $item, $content . '/' . $name . '/' . $item );
+					$this->job['placed'][] = $name . '/' . $item;
 				}
 				continue;
 			}
@@ -1277,6 +1288,7 @@ final class SafeGrd_Restore {
 				foreach ( (array) scandir( $stage . '/mu-plugins' ) as $mu ) {
 					if ( '.' !== $mu && '..' !== $mu && ! file_exists( $content . '/mu-plugins/' . $mu ) ) {
 						self::move( $stage . '/mu-plugins/' . $mu, $content . '/mu-plugins/' . $mu );
+						$this->job['placed'][] = 'mu-plugins/' . $mu;
 					}
 				}
 				continue;
@@ -1285,6 +1297,7 @@ final class SafeGrd_Restore {
 				self::move( $content . '/' . $name, $keep . '/' . $name );
 			}
 			self::move( $stage . '/' . $name, $content . '/' . $name );
+			$this->job['placed'][] = $name;
 		}
 		self::rmdir( $stage );
 	}
@@ -1293,7 +1306,11 @@ final class SafeGrd_Restore {
 	private function finish_swap( $tables, $aside ) {
 		wp_cache_flush();
 		delete_option( 'rewrite_rules' );
-		SafeGrd_Scheduler::reschedule_after_restore();
+		// WP-Cron's schedule lives in the options table: only a restore that
+		// brought it back has a schedule to put right.
+		if ( $this->has_table( 'options' ) ) {
+			SafeGrd_Scheduler::reschedule_after_restore();
+		}
 		$items = (array) ( $this->job['items'] ?? array() );
 		if ( ! empty( $items['plugins'] ) && ! $this->has_table( 'options' ) ) {
 			$this->job['notes'][] = 'Plugins keep this site\'s settings and whether each is active. Activate a restored plugin under Plugins if it is not.';
@@ -1309,6 +1326,9 @@ final class SafeGrd_Restore {
 			'components'  => $this->job['components'] ?? SafeGrd_Site::COMPONENTS,
 			'items'       => $items,
 			'users'       => $users,
+			'tables_in'   => (array) ( $this->job['tables_in'] ?? array() ),
+			'placed'      => (array) ( $this->job['placed'] ?? array() ),
+			'undone'      => false,
 			'tables'      => $tables ? count( $this->job['manifest']['tables'] ) : 0,
 			'rows'        => $tables ? $this->job['manifest']['rows'] : 0,
 			'files'       => $this->job['files'],
@@ -1318,6 +1338,7 @@ final class SafeGrd_Restore {
 			'wordpress'   => $this->job['source_wp'],
 		);
 		delete_option( self::JOB );
+		delete_option( self::FAILED );
 		update_option( self::LAST, $last, false );
 		self::drop_tables();
 		$what = self::describe_parts( $last['components'], $items );
@@ -1653,7 +1674,7 @@ final class SafeGrd_Restore {
 			$message .= ' This site is as it was.';
 		}
 		update_option(
-			self::LAST,
+			self::FAILED,
 			array(
 				'snapshot_id' => $job['snapshot_id'],
 				'failed'      => $message,
@@ -1665,6 +1686,185 @@ final class SafeGrd_Restore {
 			'status'  => 'failed',
 			'message' => $message,
 		);
+	}
+
+	/**
+	 * Puts back what the last restore replaced, from the copy it kept aside.
+	 * Each table and file it put in place trades places with its copy, so
+	 * the copy then holds the restored version: Delete the copy still
+	 * works, and undoing again puts the restore back. Something the restore
+	 * added that the site did not have goes into the copy.
+	 *
+	 * @return string|WP_Error What was put back, in words.
+	 */
+	public static function undo() {
+		$last = get_option( self::LAST, array() );
+		if ( empty( $last['aside'] ) ) {
+			return new WP_Error( 'safegrd_undo', 'There is no copy from before a restore to put back.' );
+		}
+		if ( ! isset( $last['placed'], $last['tables_in'] ) ) {
+			return new WP_Error( 'safegrd_undo', 'That restore was made by an older version of the plugin, which did not record what it replaced, so it cannot be put back. Its copy is still kept aside.' );
+		}
+		if ( self::job() ) {
+			return new WP_Error( 'safegrd_undo', 'A restore or a download is under way. Put the copy back when it finishes.' );
+		}
+		if ( is_array( get_option( SafeGrd_Backup::JOB, null ) ) ) {
+			return new WP_Error( 'safegrd_undo', 'A backup is under way. Put the copy back when it finishes.' );
+		}
+		if ( ! SafeGrd_Backup::take_lock( 25 ) ) {
+			return new WP_Error( 'safegrd_undo', 'A backup or restore slice is running now. Try again in a minute.' );
+		}
+		global $wpdb;
+		$db      = SafeGrd_Dumper::connect();
+		$live    = $wpdb->prefix;
+		$aside   = $last['aside'];
+		$swap    = 'sgu' . substr( bin2hex( random_bytes( 3 ) ), 0, 6 ) . '_';
+		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		$keep    = $content . '/' . $last['aside_dir'];
+		$mine    = basename( dirname( SAFEGRD_FILE ) );
+		try {
+			$exists = function ( $name ) use ( $db ) {
+				$r = $db->query( "SHOW TABLES LIKE '" . $db->real_escape_string( addcslashes( $name, '_%\\' ) ) . "'" );
+				return $r && $r->num_rows > 0;
+			};
+			// Every path that moves must be one PHP can move, before anything does.
+			foreach ( (array) $last['placed'] as $p ) {
+				foreach ( array( $content . '/' . $p, $keep . '/' . $p ) as $path ) {
+					if ( file_exists( $path ) && ! wp_is_writable( $path ) ) {
+						throw new SafeGrd_Exception( esc_html( sprintf( 'PHP cannot move %s, so nothing was put back. Make it writable by the web server, then try again.', substr( $path, strlen( dirname( $content ) ) + 1 ) ) ), 'other' );
+					}
+				}
+			}
+			// This plugin's rows stay as they are now: the connection, and
+			// this record of the restore.
+			if ( in_array( 'options', (array) $last['tables_in'], true ) && $exists( $aside . 'options' ) && $exists( $live . 'options' ) ) {
+				// The copy's own rows are from the moment of the restore, the
+				// job that was running among them: they go, and the live ones
+				// take their place.
+				$db->query( "DELETE FROM `{$aside}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
+				$own = $db->query( "SELECT option_name, option_value, autoload FROM `{$live}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
+				while ( $own && ( $o = $own->fetch_row() ) ) {
+					$stmt = $db->prepare( "REPLACE INTO `{$aside}options` (option_name, option_value, autoload) VALUES (?, ?, ?)" );
+					$stmt->bind_param( 'sss', $o[0], $o[1], $o[2] );
+					$stmt->execute();
+					$stmt->close();
+				}
+			}
+			$renames = array();
+			foreach ( (array) $last['tables_in'] as $suffix ) {
+				$l = $exists( $live . $suffix );
+				$a = $exists( $aside . $suffix );
+				if ( $l && $a ) {
+					array_push( $renames, "`{$live}{$suffix}` TO `{$swap}{$suffix}`", "`{$aside}{$suffix}` TO `{$live}{$suffix}`", "`{$swap}{$suffix}` TO `{$aside}{$suffix}`" );
+				} elseif ( $l ) {
+					$renames[] = "`{$live}{$suffix}` TO `{$aside}{$suffix}`";
+				} elseif ( $a ) {
+					$renames[] = "`{$aside}{$suffix}` TO `{$live}{$suffix}`";
+				}
+			}
+			$maintenance = ABSPATH . '.maintenance';
+			$maint       = @file_put_contents( $maintenance, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- WordPress reads .maintenance from ABSPATH, as core updates write it; best effort, the swap is quick either way.
+			try {
+				if ( $renames && false === $db->query( 'RENAME TABLE ' . implode( ', ', $renames ) ) ) {
+					throw new SafeGrd_Exception( esc_html( 'The database refused to put the tables back: ' . $db->error . '. Nothing was changed.' ), 'other' );
+				}
+				foreach ( (array) $last['placed'] as $p ) {
+					$l = $content . '/' . $p;
+					$a = $keep . '/' . $p;
+					// This plugin stays the running copy, wherever the plugins
+					// directory it sits in goes.
+					if ( 'plugins' === $p && is_dir( $l . '/' . $mine ) && is_dir( $a ) && ! file_exists( $a . '/' . $mine ) ) {
+						self::move( $l . '/' . $mine, $a . '/' . $mine );
+					}
+					if ( file_exists( $l ) && file_exists( $a ) ) {
+						self::move( $l, $l . '.' . rtrim( $swap, '_' ) );
+						self::move( $a, $l );
+						self::move( $l . '.' . rtrim( $swap, '_' ), $a );
+					} elseif ( file_exists( $l ) ) {
+						wp_mkdir_p( dirname( $a ) );
+						self::move( $l, $a );
+					} elseif ( file_exists( $a ) ) {
+						wp_mkdir_p( dirname( $l ) );
+						self::move( $a, $l );
+					}
+				}
+			} finally {
+				if ( $maint && file_exists( $maintenance ) ) {
+					wp_delete_file( $maintenance );
+				}
+			}
+		} catch ( Throwable $e ) {
+			return new WP_Error( 'safegrd_undo', SafeGrd_Exception::text( $e ) );
+		} finally {
+			$db->close();
+			SafeGrd_Backup::release_lock();
+		}
+		wp_cache_flush();
+		delete_option( 'rewrite_rules' );
+		$last['undone']    = empty( $last['undone'] );
+		$last['undone_at'] = gmdate( 'c' );
+		update_option( self::LAST, $last, false );
+		$users = in_array( 'users', (array) $last['tables_in'], true );
+		$what  = self::describe_parts( (array) ( $last['components'] ?? SafeGrd_Site::COMPONENTS ), (array) ( $last['items'] ?? array() ) );
+		$what  = '' === $what ? 'database and files' : $what;
+		return $last['undone']
+			? sprintf( 'Put back the %s from before the restore of %s. The restored version is kept aside.%s', $what, $last['snapshot_id'], $users ? ' The site\'s users are its own again: sign in with this site\'s administrator account.' : '' )
+			: sprintf( 'Restored the %s again from the copy kept aside.%s', $what, $users ? ' The site\'s users are the backup\'s: sign in with an administrator account of the restored site.' : '' );
+	}
+
+	/**
+	 * Copies kept aside by restores before the last one: each restore keeps
+	 * what it replaced, and only the last is offered to put back. They stay
+	 * until deleted.
+	 *
+	 * @return array{dirs:array,tables:array,bytes:int} Directory names in the content directory, table names, and their size.
+	 */
+	public static function older_copies() {
+		$last    = get_option( self::LAST, array() );
+		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		$out     = array(
+			'dirs'   => array(),
+			'tables' => array(),
+			'bytes'  => 0,
+		);
+		foreach ( (array) glob( $content . '/safegrd-before-restore-*', GLOB_ONLYDIR ) as $dir ) {
+			if ( basename( $dir ) === ( $last['aside_dir'] ?? '' ) ) {
+				continue;
+			}
+			$out['dirs'][] = basename( $dir );
+			$it            = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ) );
+			foreach ( $it as $f ) {
+				$out['bytes'] += $f->isFile() ? (int) $f->getSize() : 0;
+			}
+		}
+		global $wpdb;
+		$rows = $wpdb->get_results( "SELECT table_name AS n, COALESCE(data_length, 0) + COALESCE(index_length, 0) AS b FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'sgb%'", ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the tables restores kept aside, which only this plugin names.
+		foreach ( (array) $rows as $r ) {
+			if ( preg_match( '/^sgb[0-9a-f]{6}_/', $r['n'] ) && 0 !== strpos( $r['n'], (string) ( $last['aside'] ?? "\0" ) ) ) {
+				$out['tables'][] = $r['n'];
+				$out['bytes']   += (int) $r['b'];
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Deletes the copies kept by restores before the last one.
+	 *
+	 * @return string What was deleted, in words.
+	 */
+	public static function delete_older_copies() {
+		$old = self::older_copies();
+		if ( $old['tables'] ) {
+			$db = SafeGrd_Dumper::connect();
+			$db->query( 'DROP TABLE IF EXISTS `' . implode( '`,`', $old['tables'] ) . '`' );
+			$db->close();
+		}
+		$content = rtrim( str_replace( '\\', '/', WP_CONTENT_DIR ), '/' );
+		foreach ( $old['dirs'] as $d ) {
+			self::rmdir( $content . '/' . $d );
+		}
+		return sprintf( 'Deleted the copies kept by earlier restores: %d tables and %d directories, %s.', count( $old['tables'] ), count( $old['dirs'] ), size_format( $old['bytes'], 1 ) );
 	}
 
 	/**
@@ -1740,27 +1940,43 @@ final class SafeGrd_Restore {
 	 * day, as a backup does not change.
 	 *
 	 * @param string $snapshot_id The snapshot.
-	 * @return array|WP_Error {plugins, themes: [{slug, name, version, active, installed}], tables: [{name, rows, bytes}], prefix}
+	 * @return array|WP_Error {plugins, themes: [{slug, name, version, active, installed}], tables: [{name, rows, bytes}], prefix,
+	 *                        parts: part => {files, bytes} or {tables, rows, bytes}, site_url, wordpress_version, php_version}
 	 */
 	public static function contents( $snapshot_id ) {
 		if ( ! preg_match( '/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/', (string) $snapshot_id ) ) {
 			return new WP_Error( 'safegrd_restore', 'That is not a snapshot id.' );
 		}
-		$key      = 'safegrd_contents_' . md5( $snapshot_id );
+		$key      = 'safegrd_contents2_' . md5( $snapshot_id );
 		$manifest = get_transient( $key );
 		if ( ! is_array( $manifest ) ) {
 			try {
 				$job         = new self();
 				$job->client = SafeGrd_Client::for_site();
 				$job->job    = array( 'snapshot_id' => $snapshot_id );
-				$snap        = $job->open_snapshot()[1];
-				$man         = null;
-				foreach ( $job->reader->tree( $snap['root_tree'] ) as $e ) {
-					if ( 'file' === ( $e['type'] ?? '' ) && 'manifest.json' === ( $e['name'] ?? '' ) ) {
-						$man = $e;
+				// The manifest and the root tree change every run, so the run
+				// that wrote the snapshot holds them: its index is enough,
+				// unless a backup left both unchanged.
+				$snap = $job->open_snapshot( true )[1];
+				$read = null;
+				for ( $pass = 0; $pass < 2 && null === $read; $pass++ ) {
+					if ( 1 === $pass ) {
+						$job->reader->load_index( $snap );
+					}
+					try {
+						$man = null;
+						foreach ( $job->reader->tree( $snap['root_tree'] ) as $e ) {
+							if ( 'file' === ( $e['type'] ?? '' ) && 'manifest.json' === ( $e['name'] ?? '' ) ) {
+								$man = $e;
+							}
+						}
+						$read = $man ? json_decode( $job->read_file( $man ), true ) : false;
+					} catch ( SafeGrd_Exception $e ) {
+						if ( 1 === $pass || false === strpos( $e->getMessage(), 'is in no index' ) ) {
+							throw $e;
+						}
 					}
 				}
-				$read = $man ? json_decode( $job->read_file( $man ), true ) : null;
 				if ( ! is_array( $read ) ) {
 					throw new SafeGrd_Exception( esc_html( 'This backup holds no manifest that parses.' ), 'other' );
 				}
@@ -1771,6 +1987,11 @@ final class SafeGrd_Restore {
 				'components' => (array) ( $read['components'] ?? array() ),
 				'tables'     => (array) ( $read['table_stats'] ?? array() ),
 				'prefix'     => (string) ( $read['wordpress']['table_prefix'] ?? '' ),
+				'wordpress'  => array(
+					'site_url'          => (string) ( $read['wordpress']['site_url'] ?? '' ),
+					'wordpress_version' => (string) ( $read['wordpress']['wordpress_version'] ?? '' ),
+					'php_version'       => (string) ( $read['wordpress']['php_version'] ?? '' ),
+				),
 			);
 			set_transient( $key, $manifest, DAY_IN_SECONDS );
 		}
@@ -1784,12 +2005,23 @@ final class SafeGrd_Restore {
 		foreach ( wp_get_themes() as $slug => $t ) {
 			$installed['themes'][ (string) $slug ] = (string) $t->get( 'Version' );
 		}
-		$out = array(
-			'plugins' => array(),
-			'themes'  => array(),
-			'tables'  => array(),
-			'prefix'  => $manifest['prefix'],
+		$out = array_merge(
+			array(
+				'plugins' => array(),
+				'themes'  => array(),
+				'tables'  => array(),
+				'prefix'  => $manifest['prefix'],
+				'parts'   => array(),
+			),
+			(array) ( $manifest['wordpress'] ?? array() )
 		);
+		foreach ( SafeGrd_Site::COMPONENTS as $c ) {
+			$p = (array) ( $manifest['components'][ $c ] ?? array() );
+			unset( $p['items'] );
+			if ( $p ) {
+				$out['parts'][ $c ] = array_map( 'intval', $p );
+			}
+		}
 		foreach ( array( 'plugins', 'themes' ) as $c ) {
 			foreach ( (array) ( $manifest['components'][ $c ]['items'] ?? array() ) as $it ) {
 				$slug = 'plugins' === $c ? strtok( (string) $it['file'], '/' ) : (string) $it['slug'];
@@ -1835,6 +2067,7 @@ final class SafeGrd_Restore {
 			}
 			$out[] = array(
 				'id'       => $s['snapshot_id'],
+				'node_id'  => (string) ( $s['node_id'] ?? '' ),
 				'site'     => $s['wordpress']['site_url'] ?? '',
 				'taken'    => $s['created_at'] ?? '',
 				'tables'   => (int) ( $s['total_tables'] ?? 0 ),

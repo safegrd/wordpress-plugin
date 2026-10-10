@@ -19,7 +19,7 @@ The free plan covers one site. What each plan includes is at https://safegrd.dev
 = On Tools, SafeGrd =
 
 * Backups: one line saying whether the site is backed up, then the last backup, the next one and the last test restore, with how often your plan test-restores and when the next is due. Hosted storage used against what your plan includes, with SafeGrd's warning from 80%. Recent backups, each marked as the month's full upload or an incremental one, beside the site's size.
-* Restore & download: restore any WordPress backup in the account onto this site, all of it or only some parts (database, plugins, themes, uploads, the rest of wp-content), or migrate a site to a new host or domain. Pick single plugins, themes or tables from a backup, each listed with the version installed now. Download one part of a backup: the database as a gzipped SQL dump, the others as a gzipped tar.
+* Restore & download: this site's backups, or any WordPress site's in the account. Open one to see what it holds, then restore all of it, some parts (database, plugins, themes, uploads, the rest of wp-content), or single plugins, themes or tables, each listed with the version installed now. A review lists what will be replaced first, and Put the copy back undoes the restore. Download a part, or single items, as a file. Migrate a site to a new host or domain the same way.
 * Updates, Plugins and Themes: how old the last backup is, with Back up now, while updates wait.
 * Settings: back up daily or weekly, from an hour you choose, and leave out paths or file names, such as *.zip.
 * Logs: what the last 20 backups, restores and downloads printed.
@@ -54,7 +54,7 @@ A backup runs in slices of a few seconds, each its own request, so shared and ma
 
 = WP-CLI =
 
-wp safegrd connect, backup, status, snapshots, contents, schedule, restore (with --only=plugins,themes, or --plugins, --themes and --tables for single ones) and download do the same as Tools, SafeGrd, for a host with a shell and for a cron job where PHP has no time limit. WP-CLI is not needed to set up or run the plugin.
+wp safegrd connect, backup, status, snapshots, contents, schedule, restore (with --only=plugins,themes, or --plugins, --themes and --tables for single ones, and --undo), download and logs do the same as Tools, SafeGrd, for a host with a shell and for a cron job where PHP has no time limit. WP-CLI is not needed to set up or run the plugin.
 
 == External service ==
 
@@ -95,9 +95,13 @@ Yes, one part at a time from Tools, SafeGrd, Restore & download: the database as
 
 Yes. Tick the parts to restore. Plugin and theme settings live in the database, so restoring plugins alone brings back their files and keeps this site's settings, content and sign-in. This plugin always stays the version running.
 
+= Can I undo a restore? =
+
+Yes. A restore keeps what it replaced. Put the copy back, on Tools, SafeGrd, Restore & download, swaps it back, and keeps the restored version aside, so pressing it again restores it again. With WP-CLI: wp safegrd restore --undo.
+
 = Can I roll back one plugin after a bad update? =
 
-Yes. On Tools, SafeGrd, Restore, open a backup from before the update, press Choose plugins, themes or tables, and tick that plugin only. Each is listed with the version in the backup and the one installed now. Only that plugin's files are replaced. Its settings stay as they are, since they live in the database. With WP-CLI: wp safegrd restore <snapshot> --plugins=akismet.
+Yes. On Tools, SafeGrd, Restore & download, open a backup from before the update, choose Some plugins only, and tick that plugin. Each is listed with the version in the backup and the one installed now. Only that plugin's files are replaced. Its settings stay as they are, since they live in the database. With WP-CLI: wp safegrd restore <snapshot> --plugins=akismet.
 
 = Can I restore one table? =
 
@@ -145,6 +149,15 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 * Download single tables as a SQL dump, or single plugins or themes as a tar, with wp safegrd download --tables, --plugins or --themes.
 * wp safegrd contents lists the plugins, themes and tables a backup holds.
 * The Updates, Plugins and Themes screens show how old the last backup is, with Back up now, while updates wait.
+* Restore & download, redone: this site's backups first, with a filter for the others. Open one to see each part's size, the WordPress and PHP versions, and its plugins, themes and tables. A review lists what will be replaced before anything starts.
+* Put the copy back undoes the last restore, and pressing it again restores it again. wp safegrd restore --undo does the same.
+* Copies kept by earlier restores are listed with their size, with Delete them, or wp safegrd restore --delete-older.
+* A restore of some plugins, themes or tables no longer moves the next backup a week out.
+* A failed restore no longer hides the copy of the last one that worked.
+* Recent backups show each backup's id and Open, and say Test-restored or Backed up.
+* Logs mark a run that stopped without finishing as stopped.
+* wp safegrd snapshots --site and --format=json, wp safegrd logs, and wp safegrd status shows the last test restore.
+* Reading what a backup holds takes a third of the requests it did.
 
 = 0.1.5 =
 * A restore or a download of a site with thousands of files waits when SafeGrd asks it to slow down, instead of stopping with "Rate limit exceeded".

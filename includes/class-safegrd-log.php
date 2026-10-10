@@ -116,6 +116,17 @@ final class SafeGrd_Log {
 	}
 
 	/**
+	 * How a run ended. A run still marked running whose slices stopped
+	 * coming an hour ago, with nothing under way, stopped without saying so.
+	 */
+	public static function status( array $r ) {
+		if ( 'running' === $r['status'] && (int) ( $r['updated'] ?? $r['started'] ) < time() - HOUR_IN_SECONDS && ! SafeGrd_Restore::job() && ! SafeGrd_Backup::running() ) {
+			return 'stopped';
+		}
+		return (string) $r['status'];
+	}
+
+	/**
 	 * One run's log as text, or '' when it is not kept.
 	 */
 	public static function text( $key ) {

@@ -67,13 +67,18 @@ every attachment the database names (`_wp_attached_file`) is in the snapshot.
 
 ## Restore
 
-From wp-admin: install WordPress and this plugin on any host, connect to the same account, and
-open Tools, SafeGrd. *Restore* lists the backups of every WordPress site in the account; pick one
-and confirm. The same page restores a site over itself.
+From wp-admin: open Tools, SafeGrd, *Restore & download*. The list shows this site's backups;
+the *Site* filter shows another site's, or every site's in the account. *Open* a backup to see
+what it holds: each part's size, the WordPress and PHP versions, and its plugins, themes and
+tables. Tick what to take, press *Review restore*, and the review lists what will be replaced
+before *Restore now*. The same page restores a site over itself.
 
 - Nothing on the site changes until every table and file is loaded and checked against the
-  backup. Then one step swaps them in, and the tables and files they replace are kept aside until
-  you press *Delete the copy*.
+  backup. Then one step swaps them in, and the tables and files they replace are kept aside.
+- *Put the copy back* undoes the last restore: what it replaced trades places with what it put
+  in, so the restored version is then kept aside, and pressing it again restores it again.
+  *Delete the copy* frees the space. Copies kept by earlier restores are listed with their size,
+  with *Delete them*.
 - The site keeps its own `wp-config.php` and domain. The restore runs a search and replace from
   the old URL to the new one, serialized data included, and renames the tables to the new
   table prefix.
@@ -82,19 +87,24 @@ and confirm. The same page restores a site over itself.
 - Tick only some parts to restore those: the database, plugins, themes, uploads, and *others*
   (the rest of wp-content). Without the database the site keeps its content, settings and
   sign-in. This plugin always stays the version running.
-- *Choose plugins, themes or tables* lists what the backup holds, read from its manifest, with
-  the version of each plugin and theme installed now. Tick some to restore only those: each
-  replaces its own directory or table, and every other one stays. Restoring the users table
-  brings the backup's users with it; any other table leaves the sign-in as it is.
+- *Some plugins only*, *Some themes only* and *Some tables only* list what the backup holds, with
+  the version of each plugin and theme in the backup beside the one installed now. Tick some to
+  restore only those: each replaces its own directory or table, and every other one stays.
+  Restoring the users table brings the backup's users with it; any other table leaves the
+  sign-in as it is.
+- *Download as a file* writes the one part ticked, or the plugins, themes or tables chosen in
+  it.
 
 ```sh
-wp safegrd snapshots
+wp safegrd snapshots --site=this                 # or all, or another site's address
 wp safegrd restore snap-... --yes
 wp safegrd restore snap-... --only=plugins,themes --yes
 wp safegrd contents snap-...                     # plugins, themes and tables, with versions
 wp safegrd restore snap-... --plugins=akismet --yes
 wp safegrd restore snap-... --tables=wp_posts,wp_postmeta --yes
-wp safegrd restore --delete-copy
+wp safegrd restore --undo                        # put back what the last restore replaced
+wp safegrd restore --delete-copy                 # or --delete-older for earlier restores' copies
+wp safegrd logs                                  # the last runs; wp safegrd logs <run> prints one
 ```
 
 ## Before updates

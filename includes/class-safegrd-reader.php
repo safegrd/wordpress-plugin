@@ -181,6 +181,8 @@ final class SafeGrd_Repo_Reader {
 
 	/** Neighbouring blobs closer than this are fetched in one request. */
 	const PREFETCH_GAP = 262144;
+	/** Bytes from a pack's start read in one request with its header, for a record that ends within them. */
+	const HEAD_SPAN = 1048576;
 	/** No one prefetch request reads more than this. */
 	const PREFETCH_SPAN = 16777216;
 
@@ -266,9 +268,24 @@ final class SafeGrd_Repo_Reader {
 		return $v;
 	}
 
-	/** Loads the index of every run a snapshot names. */
-	public function load_index( array $snapshot ) {
-		foreach ( $snapshot['runs'] as $run ) {
+	/**
+	 * Loads the index of every run a snapshot names, or of some of them.
+	 * Their URLs are signed in one request first.
+	 *
+	 * @param array      $snapshot The snapshot object.
+	 * @param array|null $runs     Only these runs; null for all the snapshot names.
+	 */
+	public function load_index( array $snapshot, $runs = null ) {
+		$runs = null === $runs ? $snapshot['runs'] : array_values( array_intersect( $snapshot['runs'], $runs ) );
+		$this->urls(
+			array_map(
+				function ( $run ) {
+					return $this->prefix . '/index/' . $run . '.age';
+				},
+				$runs
+			)
+		);
+		foreach ( $runs as $run ) {
 			$x = $this->object( 'index', $run );
 			foreach ( $x['packs'] as $p ) {
 				foreach ( $p['blobs'] as $b ) {
@@ -286,17 +303,23 @@ final class SafeGrd_Repo_Reader {
 		return $this->index;
 	}
 
-	private function pack_key( $pack ) {
+	/**
+	 * A pack's key, unwrapped with the identity.
+	 *
+	 * @param string      $pack The pack's id.
+	 * @param string|null $head The pack's first bytes, when they were read already.
+	 */
+	private function pack_key( $pack, $head = null ) {
 		if ( isset( $this->pack_keys[ $pack ] ) ) {
 			return $this->pack_keys[ $pack ];
 		}
 		$key  = $this->prefix . '/packs/' . $pack;
-		$head = $this->get( $key, 0, 12 );
+		$head = null === $head ? $this->get( $key, 0, 12 ) : $head;
 		if ( 'SGPK' !== substr( $head, 0, 4 ) || 1 !== ord( $head[4] ) ) {
 			throw new SafeGrd_Exception( esc_html( 'Pack ' . $pack . ' is not a pack this plugin reads.' ), 'other' );
 		}
 		$w       = unpack( 'V', substr( $head, 8, 4 ) )[1];
-		$wrapped = $this->get( $key, 12, $w );
+		$wrapped = strlen( $head ) >= 12 + $w ? substr( $head, 12, $w ) : $this->get( $key, 12, $w );
 		$k       = SafeGrd_Age_Reader::decrypt( $wrapped, $this->identity );
 		if ( 32 !== strlen( $k ) ) {
 			throw new SafeGrd_Exception( esc_html( 'Pack ' . $pack . ' has a malformed key.' ), 'other' );
@@ -409,6 +432,12 @@ final class SafeGrd_Repo_Reader {
 		if ( isset( $this->records[ $id ] ) ) {
 			$record = $this->records[ $id ];
 			unset( $this->records[ $id ] );
+		} elseif ( ! isset( $this->pack_keys[ $pack ] ) && $offset + $length <= self::HEAD_SPAN ) {
+			// The pack's key is in its header, before every record: a record
+			// near the start comes with it in one read instead of three.
+			$bytes  = $this->get( $this->prefix . '/packs/' . $pack, 0, $offset + $length );
+			$record = substr( $bytes, $offset, $length );
+			$this->pack_key( $pack, $bytes );
 		} else {
 			$record = $this->get( $this->prefix . '/packs/' . $pack, $offset, $length );
 		}

@@ -25,15 +25,29 @@
 .safegrd .safegrd-panel[hidden] { display: none; }
 .safegrd .safegrd-actions { white-space: nowrap; }
 .safegrd .safegrd-actions select { margin-left: 4px; vertical-align: middle; }
-.safegrd .safegrd-parts { margin: 8px 0; }
-.safegrd .safegrd-parts legend { font-weight: 600; margin-bottom: 6px; }
-.safegrd .safegrd-parts label { display: inline-block; margin-right: 16px; }
 .safegrd .safegrd-log { background: #f6f7f7; border: 1px solid #dcdcde; padding: 8px 12px; max-height: 28em; overflow: auto; white-space: pre-wrap; font-size: 12px; }
-.safegrd .safegrd-items { margin: 8px 0 12px; }
-.safegrd .safegrd-items legend { font-weight: 600; margin-bottom: 4px; }
-.safegrd .safegrd-items[disabled] { opacity: .5; }
 .safegrd .safegrd-items-bar { margin: 0 0 4px; }
 .safegrd .safegrd-items-bar .button-link { margin-right: 12px; }
 .safegrd .safegrd-items-list { max-height: 14em; overflow: auto; border: 1px solid #dcdcde; padding: 4px 8px; background: #fff; max-width: 40em; }
 .safegrd .safegrd-items-list label { display: block; margin: 2px 0; }
-.safegrd .safegrd-items-wrap[hidden], .safegrd p[hidden] { display: none; }
+.safegrd .safegrd-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.safegrd .safegrd-filter select { margin-left: 4px; }
+.safegrd .safegrd-id { font-family: Menlo, Consolas, monospace; font-size: 11px; color: #646970; }
+.safegrd .safegrd-restore-table tr.is-open td { background: #f0f6fc; }
+.safegrd .safegrd-restore-table td { vertical-align: middle; }
+.safegrd .safegrd-more-btn { margin-top: 8px; }
+.safegrd .safegrd-more { margin: 12px 0 4px; }
+.safegrd .safegrd-more summary { cursor: pointer; }
+.safegrd .safegrd-backup { border-color: #2271b1; border-width: 1px 1px 1px 4px; }
+.safegrd .safegrd-facts { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.safegrd .safegrd-facts span { background: #f0f0f1; border-radius: 3px; padding: 2px 8px; font-size: 12px; }
+.safegrd .safegrd-facts span:first-child { font-family: Menlo, Consolas, monospace; }
+.safegrd .safegrd-parts-table { max-width: 60em; }
+.safegrd .safegrd-parts-table th:first-child, .safegrd .safegrd-parts-table td:first-child { width: 2em; }
+.safegrd .safegrd-parts-table td { vertical-align: top; }
+.safegrd .safegrd-parts-table td:nth-child(2) > label { font-weight: 600; }
+.safegrd .safegrd-items-row td { border-top: 0; padding-top: 0; }
+.safegrd .safegrd-notes { list-style: disc; margin: 12px 0 8px 20px; max-width: 60em; }
+.safegrd .safegrd-review { background: #fcf9e8; border: 1px solid #dba617; padding: 4px 16px 12px; margin: 12px 0; max-width: 60em; }
+.safegrd .safegrd-review ul { list-style: disc; margin-left: 20px; }
+.safegrd .button-link.safegrd-danger { color: #b32d2e; margin-left: 8px; }
