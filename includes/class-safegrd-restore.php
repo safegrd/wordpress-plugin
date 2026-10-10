@@ -111,20 +111,31 @@ final class SafeGrd_Restore {
 
 	// --- starting -----------------------------------------------------------
 
-	/**
-	 * Starts a restore of a snapshot, after the person confirmed it.
-	 *
-	 * @return true|WP_Error
-	 */
+	/** The parts a restore or a download can take item by item. */
+	const ITEM_PARTS = array( 'plugins', 'themes', 'database' );
+
 	/**
 	 * Starts a restore of a snapshot, or of some of its parts.
 	 *
 	 * @param string     $snapshot_id The snapshot.
-	 * @param array|null $components  Some of SafeGrd_Site::COMPONENTS; null for all of them.
+	 * @param array|null $components  Some of SafeGrd_Site::COMPONENTS; null for all of them, or
+	 *                                for the parts $items names when it names any.
+	 * @param string     $mode        restore or download.
+	 * @param array      $items       Some plugins, themes or tables only: part => names. A
+	 *                                plugin or theme is its directory (or file) under plugins
+	 *                                or themes; a table is its name in the backup, with or
+	 *                                without the backup's table prefix.
 	 * @return true|WP_Error
 	 */
-	public static function begin( $snapshot_id, $components = null, $mode = 'restore' ) {
-		$components = null === $components ? SafeGrd_Site::COMPONENTS : array_values( array_intersect( SafeGrd_Site::COMPONENTS, (array) $components ) );
+	public static function begin( $snapshot_id, $components = null, $mode = 'restore', array $items = array() ) {
+		$items = self::check_items( $items, 'download' !== $mode );
+		if ( is_wp_error( $items ) ) {
+			return $items;
+		}
+		if ( null === $components ) {
+			$components = $items ? array_keys( $items ) : SafeGrd_Site::COMPONENTS;
+		}
+		$components = array_values( array_intersect( SafeGrd_Site::COMPONENTS, array_merge( (array) $components, array_keys( $items ) ) ) );
 		if ( ! $components ) {
 			return new WP_Error( 'safegrd_restore', 'Choose at least one part of the site to restore.' );
 		}
@@ -150,6 +161,7 @@ final class SafeGrd_Restore {
 				'snapshot_id' => $snapshot_id,
 				'id'          => $id,
 				'components'  => $components,
+				'items'       => $items,
 				'mode'        => 'download' === $mode ? 'download' : 'restore',
 				'out_dir'     => 'safegrd-download-' . bin2hex( random_bytes( 8 ) ),
 				'out_bytes'   => 0,
@@ -172,6 +184,56 @@ final class SafeGrd_Restore {
 			false
 		);
 		return true;
+	}
+
+	/**
+	 * The plugins, themes and tables asked for, checked: part => unique
+	 * names, with parts that name none left out.
+	 *
+	 * @param array $items   part => names, or a comma-separated string of names.
+	 * @param bool  $restore Whether they are restored here, which this plugin never is.
+	 * @return array|WP_Error
+	 */
+	public static function check_items( array $items, $restore = true ) {
+		$out = array();
+		foreach ( $items as $part => $names ) {
+			if ( ! in_array( $part, self::ITEM_PARTS, true ) ) {
+				return new WP_Error( 'safegrd_restore', sprintf( '%s cannot be restored item by item. Choose plugins, themes or tables.', $part ) );
+			}
+			$names = is_array( $names ) ? array_filter( $names, 'is_string' ) : explode( ',', (string) $names );
+			$names = array_values( array_unique( array_filter( array_map( 'trim', $names ), 'strlen' ) ) );
+			if ( ! $names ) {
+				continue;
+			}
+			foreach ( $names as $n ) {
+				$ok = 'database' === $part
+					? preg_match( '/^[A-Za-z0-9_$-]{1,64}$/', $n )
+					: preg_match( '/^[A-Za-z0-9_][A-Za-z0-9._ -]{0,199}$/', $n ) && false === strpos( $n, '..' );
+				if ( ! $ok ) {
+					return new WP_Error( 'safegrd_restore', sprintf( '"%s" is not the name of a %s.', $n, 'database' === $part ? 'table' : substr( $part, 0, -1 ) ) );
+				}
+				if ( $restore && 'plugins' === $part && basename( dirname( SAFEGRD_FILE ) ) === $n ) {
+					return new WP_Error( 'safegrd_restore', 'SafeGrd Backup stays the version running, so it is never restored from a backup.' );
+				}
+			}
+			$out[ $part ] = $names;
+		}
+		return $out;
+	}
+
+	/**
+	 * What a restore or download takes, in words, or '' for all of a backup:
+	 * "plugins (akismet), database (wp_posts, wp_postmeta), uploads".
+	 */
+	public static function describe_parts( array $components, array $items = array() ) {
+		if ( count( $components ) >= count( SafeGrd_Site::COMPONENTS ) && ! $items ) {
+			return '';
+		}
+		$out = array();
+		foreach ( $components as $c ) {
+			$out[] = empty( $items[ $c ] ) ? $c : sprintf( '%s (%s)', 'database' === $c ? 'tables' : $c, implode( ', ', $items[ $c ] ) );
+		}
+		return implode( ', ', $out );
 	}
 
 	// --- one slice ----------------------------------------------------------
@@ -332,6 +394,28 @@ final class SafeGrd_Restore {
 	private function plan() {
 		global $wpdb;
 		$this->say( 'Reading snapshot ' . $this->job['snapshot_id'] );
+		list( $rec, $snap ) = $this->open_snapshot();
+		$this->reader->prefetch_trees();
+		$entries = $this->reader->walk( $snap['root_tree'] );
+
+		// The content root of the trees, as SafeGrd recorded it.
+		$lines = array();
+		foreach ( $entries as list( $path, $e ) ) {
+			$lines[ $path ] = 'dir' === $e['type'] ? array( 'd', '-' ) : array( 'f', $e['sha256'] );
+		}
+		if ( SafeGrd_Repo_Format::content_root( $lines ) !== ( $rec['sha256_checksum'] ?? '' ) ) {
+			throw new SafeGrd_Exception( esc_html( 'The backup in storage does not match what SafeGrd recorded when it was taken. Nothing was restored.' ), 'other' );
+		}
+		$this->plan_entries( $rec, $entries );
+	}
+
+	/**
+	 * SafeGrd's record of the snapshot and the snapshot object itself, with
+	 * the reader open on its month and every index it names loaded.
+	 *
+	 * @return array{0:array,1:array}
+	 */
+	private function open_snapshot() {
 		$rec = $this->client->call( 'GET', '/api/v1/snapshots/' . rawurlencode( $this->job['snapshot_id'] ), null, 30 );
 		if ( is_wp_error( $rec ) ) {
 			throw new SafeGrd_Exception( esc_html( 'SafeGrd has no record of ' . $this->job['snapshot_id'] . ': ' . $rec->get_error_message() ), 'other' );
@@ -363,18 +447,18 @@ final class SafeGrd_Restore {
 			throw new SafeGrd_Exception( esc_html( 'The snapshot object names another snapshot.' ), 'other' );
 		}
 		$this->reader->load_index( $snap );
-		$this->reader->prefetch_trees();
-		$entries = $this->reader->walk( $snap['root_tree'] );
+		return array( $rec, $snap );
+	}
 
-		// The content root of the trees, as SafeGrd recorded it.
-		$lines = array();
-		foreach ( $entries as list( $path, $e ) ) {
-			$lines[ $path ] = 'dir' === $e['type'] ? array( 'd', '-' ) : array( 'f', $e['sha256'] );
-		}
-		if ( SafeGrd_Repo_Format::content_root( $lines ) !== ( $rec['sha256_checksum'] ?? '' ) ) {
-			throw new SafeGrd_Exception( esc_html( 'The backup in storage does not match what SafeGrd recorded when it was taken. Nothing was restored.' ), 'other' );
-		}
-
+	/**
+	 * Writes down every file of the snapshot this job takes, in the order it
+	 * writes them: the dump's parts, then the files.
+	 *
+	 * @param array $rec     SafeGrd's record of the snapshot.
+	 * @param array $entries Every path of the snapshot's trees, as walk() lists them.
+	 */
+	private function plan_entries( array $rec, array $entries ) {
+		global $wpdb;
 		// The manifest, then every file in the order the restore writes them.
 		$parts = array();
 		$files = array();
@@ -404,17 +488,39 @@ final class SafeGrd_Restore {
 		$this->job['components_size'] = $manifest['components'] ?? array();
 		$content                      = $this->source_content_path();
 		// A download is the backup's own copy of everything it names.
-		$own = $this->downloading() ? "\0" : 'files/' . $content . '/plugins/' . basename( dirname( SAFEGRD_FILE ) ) . '/';
-		$files   = array_values(
+		$own   = $this->downloading() ? "\0" : 'files/' . $content . '/plugins/' . basename( dirname( SAFEGRD_FILE ) ) . '/';
+		$items = (array) ( $this->job['items'] ?? array() );
+		$found = array();
+		$files = array_values(
 			array_filter(
 				$files,
-				function ( $f ) use ( $content, $own ) {
+				function ( $f ) use ( $content, $own, $items, &$found ) {
 					// This plugin stays the version running now: the backup's
 					// copy could be older than the code doing the restore.
-					return 0 !== strpos( $f[0], $own ) && $this->restores( SafeGrd_Site::component( $f[0], $content, $this->job['uploads_path'] ) );
+					$c = SafeGrd_Site::component( $f[0], $content, $this->job['uploads_path'] );
+					if ( 0 === strpos( $f[0], $own ) || ! $this->restores( $c ) ) {
+						return false;
+					}
+					if ( empty( $items[ $c ] ) ) {
+						return true;
+					}
+					// One plugin or theme: its directory, or a plugin's single file.
+					$item = strtok( substr( $f[0], strlen( 'files/' . $content . '/' . $c . '/' ) ), '/' );
+					if ( ! in_array( $item, $items[ $c ], true ) ) {
+						return false;
+					}
+					$found[ $c ][ $item ] = true;
+					return true;
 				}
 			)
 		);
+		foreach ( array( 'plugins', 'themes' ) as $c ) {
+			foreach ( $items[ $c ] ?? array() as $item ) {
+				if ( empty( $found[ $c ][ $item ] ) ) {
+					throw new SafeGrd_Exception( esc_html( sprintf( 'This backup holds no %s named %s. wp safegrd contents %s lists the plugins and themes it holds.', substr( $c, 0, -1 ), $item, $this->job['snapshot_id'] ) ), 'other' );
+				}
+			}
+		}
 		ksort( $parts );
 		if ( array_keys( $parts ) !== range( 0, count( $parts ) - 1 ) ) {
 			throw new SafeGrd_Exception( esc_html( 'A part of the backup\'s dump is missing.' ), 'other' );
@@ -422,6 +528,9 @@ final class SafeGrd_Restore {
 
 		if ( ! $this->restores( 'database' ) ) {
 			$parts = array();
+		} elseif ( ! empty( $items['database'] ) ) {
+			list( $parts, $manifest['table_stats'] ) = $this->choose_tables( array_values( $parts ), (array) $manifest['table_stats'], $manifest['wordpress']['table_prefix'] ?? '', $items['database'] );
+			$manifest['total_rows'] = array_sum( array_map( 'intval', array_column( $manifest['table_stats'], 'row_count' ) ) );
 		}
 		self::install_tables();
 		$seq = 0;
@@ -473,14 +582,72 @@ final class SafeGrd_Restore {
 			}
 		}
 		$this->say( sprintf( 'Snapshot of %s, taken %s: %d tables, %d files', $wp['site_url'], $this->job['taken_at'], count( $manifest['table_stats'] ), count( $files ) ) );
-		if ( ! $this->downloading() && count( $this->job['components'] ) < count( SafeGrd_Site::COMPONENTS ) ) {
-			$this->say( 'Restoring only: ' . implode( ', ', $this->job['components'] ) );
+		$only = self::describe_parts( $this->job['components'], (array) ( $this->job['items'] ?? array() ) );
+		if ( '' !== $only ) {
+			$this->say( ( $this->downloading() ? 'Writing only: ' : 'Restoring only: ' ) . $only );
 		}
 	}
 
 	/** Whether this restore takes the part of the site named. */
 	private function restores( $component ) {
 		return in_array( $component, $this->job['components'] ?? SafeGrd_Site::COMPONENTS, true );
+	}
+
+	/** Whether this restore takes only some plugins or some themes: plugins or themes. */
+	private function by_item( $component ) {
+		return in_array( $component, array( 'plugins', 'themes' ), true ) && ! empty( $this->job['items'][ $component ] );
+	}
+
+	/**
+	 * Whether this restore takes the backup's table with this suffix, the
+	 * name after the table prefix: every table, unless some were chosen.
+	 */
+	private function has_table( $suffix ) {
+		if ( ! $this->restores( 'database' ) ) {
+			return false;
+		}
+		$only = $this->job['tables_only'] ?? null;
+		return null === $only || in_array( $this->job['source_prefix'] . $suffix, $only, true );
+	}
+
+	/**
+	 * The dump's parts and the manifest's tables, cut down to the tables
+	 * chosen. The dump writes a header part, one part per table in the
+	 * manifest's order, and a footer part, so a table's part is found by its
+	 * place; load_database() checks each chosen part names its table.
+	 *
+	 * @param array  $parts  The dump's parts in order, as [path, entry].
+	 * @param array  $stats  The manifest's table_stats.
+	 * @param string $prefix The backup's table prefix.
+	 * @param array  $want   Table names, with or without the prefix.
+	 * @return array{0:array,1:array} The parts and the table_stats to load.
+	 */
+	private function choose_tables( array $parts, array $stats, $prefix, array $want ) {
+		if ( count( $parts ) !== count( $stats ) + 2 ) {
+			throw new SafeGrd_Exception( esc_html( 'This backup\'s dump is not written one table at a time, so its tables cannot be restored on their own. Restore the whole database.' ), 'other' );
+		}
+		$names = array_column( $stats, 'table_name' );
+		$chose = array();
+		foreach ( $want as $w ) {
+			if ( in_array( $w, $names, true ) ) {
+				$chose[ $w ] = true;
+			} elseif ( in_array( $prefix . $w, $names, true ) ) {
+				$chose[ $prefix . $w ] = true;
+			} else {
+				throw new SafeGrd_Exception( esc_html( sprintf( 'This backup holds no table named %s. wp safegrd contents %s lists its tables.', $w, $this->job['snapshot_id'] ) ), 'other' );
+			}
+		}
+		$keep_parts = array( $parts[0] );
+		$keep_stats = array();
+		foreach ( $stats as $i => $t ) {
+			if ( isset( $chose[ $t['table_name'] ] ) ) {
+				$keep_parts[] = $parts[ $i + 1 ];
+				$keep_stats[] = $t;
+			}
+		}
+		$keep_parts[]             = $parts[ count( $parts ) - 1 ];
+		$this->job['tables_only'] = array_keys( $chose );
+		return array( $keep_parts, $keep_stats );
 	}
 
 	/** Whether this job writes a download instead of restoring. */
@@ -615,12 +782,16 @@ final class SafeGrd_Restore {
 		}
 		$from = $this->job['source_prefix'];
 		$tmp  = $this->job['tmp'];
+		$only = $this->job['tables_only'] ?? null;
 		$sql  = preg_replace_callback(
 			'/^((?:--[^\n]*\n|\s)*)(DROP TABLE IF EXISTS|CREATE TABLE|INSERT INTO) `((?:[^`]|``)+)`/',
-			function ( $m ) use ( $from, $tmp ) {
+			function ( $m ) use ( $from, $tmp, $only ) {
 				$name = str_replace( '``', '`', $m[3] );
 				if ( 0 !== strpos( $name, $from ) ) {
 					throw new SafeGrd_Exception( esc_html( 'The dump names a table outside the site\'s prefix: ' . $name ), 'other' );
+				}
+				if ( null !== $only && ! in_array( $name, $only, true ) ) {
+					throw new SafeGrd_Exception( esc_html( sprintf( 'A part of the dump chosen for %s holds %s. Restore the whole database instead.', implode( ', ', $only ), $name ) ), 'other' );
 				}
 				return $m[1] . $m[2] . ' `' . str_replace( '`', '``', $tmp . substr( $name, strlen( $from ) ) ) . '`';
 			},
@@ -672,7 +843,7 @@ final class SafeGrd_Restore {
 			}
 			$this->job['notes'][] = sprintf( 'Search and replace: %s to %s, serialized data included.', $from, $to );
 		}
-		foreach ( array( 'siteurl' => site_url(), 'home' => home_url() ) as $name => $value ) {
+		foreach ( $this->has_table( 'options' ) ? array( 'siteurl' => site_url(), 'home' => home_url() ) : array() as $name => $value ) {
 			$stmt = $db->prepare( "UPDATE `{$tmp}options` SET option_value = ? WHERE option_name = ?" );
 			$stmt->bind_param( 'ss', $value, $name );
 			$stmt->execute();
@@ -691,14 +862,28 @@ final class SafeGrd_Restore {
 		$db  = $this->db();
 		$tmp = $this->job['tmp'];
 		$to  = $db->real_escape_string( $dst );
+		// Only the tables this restore loads: some may have been chosen.
+		$options  = $this->has_table( 'options' );
+		$usermeta = $this->has_table( 'usermeta' );
 		if ( '' === $src ) {
-			$db->query( "UPDATE `{$tmp}options` SET option_name = CONCAT('$to', option_name) WHERE option_name = 'user_roles'" );
-			$db->query( "UPDATE `{$tmp}usermeta` SET meta_key = CONCAT('$to', meta_key) WHERE meta_key IN ('capabilities', 'user_level', 'user-settings', 'user-settings-time', 'dashboard_quick_press_last_post_id')" );
+			if ( $options ) {
+				$db->query( "UPDATE `{$tmp}options` SET option_name = CONCAT('$to', option_name) WHERE option_name = 'user_roles'" );
+			}
+			if ( $usermeta ) {
+				$db->query( "UPDATE `{$tmp}usermeta` SET meta_key = CONCAT('$to', meta_key) WHERE meta_key IN ('capabilities', 'user_level', 'user-settings', 'user-settings-time', 'dashboard_quick_press_last_post_id')" );
+			}
 			return;
 		}
 		$like = $db->real_escape_string( addcslashes( $src, '_%\\' ) ) . '%';
 		$from = strlen( $src ) + 1;
-		foreach ( array( "UPDATE `{$tmp}options` SET option_name = CONCAT('$to', SUBSTRING(option_name, $from)) WHERE option_name LIKE '$like'", "UPDATE `{$tmp}usermeta` SET meta_key = CONCAT('$to', SUBSTRING(meta_key, $from)) WHERE meta_key LIKE '$like'" ) as $sql ) {
+		$sqls = array();
+		if ( $options ) {
+			$sqls[] = "UPDATE `{$tmp}options` SET option_name = CONCAT('$to', SUBSTRING(option_name, $from)) WHERE option_name LIKE '$like'";
+		}
+		if ( $usermeta ) {
+			$sqls[] = "UPDATE `{$tmp}usermeta` SET meta_key = CONCAT('$to', SUBSTRING(meta_key, $from)) WHERE meta_key LIKE '$like'";
+		}
+		foreach ( $sqls as $sql ) {
 			if ( false === $db->query( $sql ) ) {
 				throw new SafeGrd_Exception( esc_html( 'Renaming the prefixed rows failed: ' . $db->error ), 'other' );
 			}
@@ -968,7 +1153,7 @@ final class SafeGrd_Restore {
 		$this->job['stage'] = 'done';
 		$this->save();
 		$tables = $this->restores( 'database' );
-		$own    = ! $tables ? false : $db->query( "SELECT option_name, option_value, autoload FROM `{$live}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
+		$own    = ! $this->has_table( 'options' ) ? false : $db->query( "SELECT option_name, option_value, autoload FROM `{$live}options` WHERE option_name LIKE 'safegrd\\_%' OR option_name LIKE '\\_transient\\_safegrd\\_%' OR option_name LIKE '\\_transient\\_timeout\\_safegrd\\_%'" );
 		while ( $own && ( $o = $own->fetch_row() ) ) {
 			$stmt = $db->prepare( "REPLACE INTO `{$tmp}options` (option_name, option_value, autoload) VALUES (?, ?, ?)" );
 			$stmt->bind_param( 'sss', $o[0], $o[1], $o[2] );
@@ -1000,6 +1185,17 @@ final class SafeGrd_Restore {
 		$check = array( $content );
 		foreach ( (array) scandir( $stage ) as $name ) {
 			if ( '.' === $name || '..' === $name ) {
+				continue;
+			}
+			if ( $this->by_item( $name ) ) {
+				// Only the chosen plugins or themes move, inside the live directory.
+				$check[] = $content . '/' . $name;
+				foreach ( self::children( $stage . '/' . $name ) as $item ) {
+					$check[] = $stage . '/' . $name . '/' . $item;
+					if ( file_exists( $content . '/' . $name . '/' . $item ) ) {
+						$check[] = $content . '/' . $name . '/' . $item;
+					}
+				}
 				continue;
 			}
 			$check[] = $stage . '/' . $name;
@@ -1057,11 +1253,24 @@ final class SafeGrd_Restore {
 		// This plugin was left out of the staged plugins: the running copy
 		// goes into them, so it stays in place when they are swapped in.
 		$mine = basename( dirname( SAFEGRD_FILE ) );
-		if ( is_dir( $stage . '/plugins' ) && is_dir( $content . '/plugins/' . $mine ) && ! file_exists( $stage . '/plugins/' . $mine ) ) {
+		if ( ! $this->by_item( 'plugins' ) && is_dir( $stage . '/plugins' ) && is_dir( $content . '/plugins/' . $mine ) && ! file_exists( $stage . '/plugins/' . $mine ) ) {
 			self::move( $content . '/plugins/' . $mine, $stage . '/plugins/' . $mine );
 		}
 		foreach ( (array) scandir( $stage ) as $name ) {
 			if ( '.' === $name || '..' === $name ) {
+				continue;
+			}
+			if ( $this->by_item( $name ) ) {
+				// Some plugins or themes: each replaces its own directory, and
+				// every other one stays as it is.
+				wp_mkdir_p( $keep . '/' . $name );
+				wp_mkdir_p( $content . '/' . $name );
+				foreach ( self::children( $stage . '/' . $name ) as $item ) {
+					if ( file_exists( $content . '/' . $name . '/' . $item ) ) {
+						self::move( $content . '/' . $name . '/' . $item, $keep . '/' . $name . '/' . $item );
+					}
+					self::move( $stage . '/' . $name . '/' . $item, $content . '/' . $name . '/' . $item );
+				}
 				continue;
 			}
 			if ( 'mu-plugins' === $name && is_dir( $content . '/mu-plugins' ) ) {
@@ -1085,12 +1294,21 @@ final class SafeGrd_Restore {
 		wp_cache_flush();
 		delete_option( 'rewrite_rules' );
 		SafeGrd_Scheduler::reschedule_after_restore();
-		$last = array(
+		$items = (array) ( $this->job['items'] ?? array() );
+		if ( ! empty( $items['plugins'] ) && ! $this->has_table( 'options' ) ) {
+			$this->job['notes'][] = 'Plugins keep this site\'s settings and whether each is active. Activate a restored plugin under Plugins if it is not.';
+		}
+		// The site's users, and so the sign-in, are the backup's only when
+		// its users table came with it.
+		$users = $this->has_table( 'users' );
+		$last  = array(
 			'snapshot_id' => $this->job['snapshot_id'],
 			'source_url'  => $this->job['source_url'],
 			'taken_at'    => $this->job['taken_at'],
 			'restored_at' => gmdate( 'c' ),
 			'components'  => $this->job['components'] ?? SafeGrd_Site::COMPONENTS,
+			'items'       => $items,
+			'users'       => $users,
 			'tables'      => $tables ? count( $this->job['manifest']['tables'] ) : 0,
 			'rows'        => $tables ? $this->job['manifest']['rows'] : 0,
 			'files'       => $this->job['files'],
@@ -1102,7 +1320,12 @@ final class SafeGrd_Restore {
 		delete_option( self::JOB );
 		update_option( self::LAST, $last, false );
 		self::drop_tables();
-		$this->say( $tables ? 'Restored. Sign in with an administrator account of the restored site.' : 'Restored ' . implode( ', ', $this->job['components'] ) . '. The database and the sign-in are as they were.' );
+		$what = self::describe_parts( $last['components'], $items );
+		if ( $users ) {
+			$this->say( 'Restored' . ( '' === $what ? '' : ' ' . $what ) . '. Sign in with an administrator account of the restored site.' );
+		} else {
+			$this->say( 'Restored ' . $what . '. ' . ( $tables ? 'The other tables and the sign-in are as they were.' : 'The database and the sign-in are as they were.' ) );
+		}
 		SafeGrd_Log::finish( 'restore-' . $this->job['id'], 'restore', $this->job['snapshot_id'], 'restored' );
 	}
 
@@ -1124,14 +1347,17 @@ final class SafeGrd_Restore {
 		file_put_contents( $dir . '/.htaccess', "Require all denied\nDeny from all\n" );
 		// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
 		$c     = $this->job['components'][0];
-		$need  = (int) ( $this->job['components_size'][ $c ]['bytes'] ?? 0 );
+		// A part's size is known; some of its items are smaller, and not checked.
+		$need  = empty( $this->job['items'][ $c ] ) ? (int) ( $this->job['components_size'][ $c ]['bytes'] ?? 0 ) : 0;
 		$free  = function_exists( 'disk_free_space' ) ? @disk_free_space( $dir ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- some hosts disable it; the check is then skipped.
 		if ( false !== $free && $need > 0 && $free < $need + 104857600 ) {
 			throw new SafeGrd_Exception( esc_html( sprintf( 'This server has %s free and the %s of this backup are %s. Free some space, or download it with the safegrd command line tool on another machine.', size_format( $free ), $c, size_format( $need ) ) ), 'other' );
 		}
 		$host = preg_replace( '/[^A-Za-z0-9.-]+/', '-', (string) wp_parse_url( $this->job['source_url'], PHP_URL_HOST ) );
 		$port = wp_parse_url( $this->job['source_url'], PHP_URL_PORT );
-		$name = $host . ( $port ? '-' . $port : '' ) . '-' . gmdate( 'Ymd-Hi', strtotime( $this->job['taken_at'] ) ) . '-' . $c . ( 'database' === $c ? '.sql.gz' : '.tar.gz' );
+		$only = (array) ( $this->job['items'][ $c ] ?? array() );
+		$what = ! $only ? $c : ( 'database' === $c ? 'tables' : $c ) . '-' . ( 1 === count( $only ) ? preg_replace( '/[^A-Za-z0-9._-]+/', '-', $only[0] ) : count( $only ) );
+		$name = $host . ( $port ? '-' . $port : '' ) . '-' . gmdate( 'Ymd-Hi', strtotime( $this->job['taken_at'] ) ) . '-' . $what . ( 'database' === $c ? '.sql.gz' : '.tar.gz' );
 		$this->job['out_name'] = $name;
 		$this->say( sprintf( 'Writing %s', $name ) );
 	}
@@ -1484,6 +1710,11 @@ final class SafeGrd_Restore {
 		}
 	}
 
+	/** The names in a directory, without . and .. */
+	private static function children( $dir ) {
+		return array_values( array_diff( (array) scandir( $dir ), array( '.', '..' ) ) );
+	}
+
 	private static function rmdir( $dir ) {
 		if ( ! is_dir( $dir ) || is_link( $dir ) ) {
 			return;
@@ -1500,6 +1731,88 @@ final class SafeGrd_Restore {
 			}
 		}
 		@rmdir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
+	}
+
+	/**
+	 * What a backup holds, from its manifest: the plugins and themes with
+	 * their versions beside the ones installed on this site, and the tables
+	 * with their rows. The manifest is read from storage once and kept for a
+	 * day, as a backup does not change.
+	 *
+	 * @param string $snapshot_id The snapshot.
+	 * @return array|WP_Error {plugins, themes: [{slug, name, version, active, installed}], tables: [{name, rows, bytes}], prefix}
+	 */
+	public static function contents( $snapshot_id ) {
+		if ( ! preg_match( '/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/', (string) $snapshot_id ) ) {
+			return new WP_Error( 'safegrd_restore', 'That is not a snapshot id.' );
+		}
+		$key      = 'safegrd_contents_' . md5( $snapshot_id );
+		$manifest = get_transient( $key );
+		if ( ! is_array( $manifest ) ) {
+			try {
+				$job         = new self();
+				$job->client = SafeGrd_Client::for_site();
+				$job->job    = array( 'snapshot_id' => $snapshot_id );
+				$snap        = $job->open_snapshot()[1];
+				$man         = null;
+				foreach ( $job->reader->tree( $snap['root_tree'] ) as $e ) {
+					if ( 'file' === ( $e['type'] ?? '' ) && 'manifest.json' === ( $e['name'] ?? '' ) ) {
+						$man = $e;
+					}
+				}
+				$read = $man ? json_decode( $job->read_file( $man ), true ) : null;
+				if ( ! is_array( $read ) ) {
+					throw new SafeGrd_Exception( esc_html( 'This backup holds no manifest that parses.' ), 'other' );
+				}
+			} catch ( Throwable $e ) {
+				return new WP_Error( 'safegrd_restore', SafeGrd_Exception::text( $e ) );
+			}
+			$manifest = array(
+				'components' => (array) ( $read['components'] ?? array() ),
+				'tables'     => (array) ( $read['table_stats'] ?? array() ),
+				'prefix'     => (string) ( $read['wordpress']['table_prefix'] ?? '' ),
+			);
+			set_transient( $key, $manifest, DAY_IN_SECONDS );
+		}
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$installed = array();
+		foreach ( get_plugins() as $file => $p ) {
+			$installed['plugins'][ strtok( $file, '/' ) ] = (string) $p['Version'];
+		}
+		foreach ( wp_get_themes() as $slug => $t ) {
+			$installed['themes'][ (string) $slug ] = (string) $t->get( 'Version' );
+		}
+		$out = array(
+			'plugins' => array(),
+			'themes'  => array(),
+			'tables'  => array(),
+			'prefix'  => $manifest['prefix'],
+		);
+		foreach ( array( 'plugins', 'themes' ) as $c ) {
+			foreach ( (array) ( $manifest['components'][ $c ]['items'] ?? array() ) as $it ) {
+				$slug = 'plugins' === $c ? strtok( (string) $it['file'], '/' ) : (string) $it['slug'];
+				if ( 'plugins' === $c && basename( dirname( SAFEGRD_FILE ) ) === $slug ) {
+					continue; // never restored from a backup
+				}
+				$out[ $c ][] = array(
+					'slug'      => $slug,
+					'name'      => (string) $it['name'],
+					'version'   => (string) $it['version'],
+					'active'    => ! empty( $it['active'] ),
+					'installed' => $installed[ $c ][ $slug ] ?? null,
+				);
+			}
+		}
+		foreach ( $manifest['tables'] as $t ) {
+			$out['tables'][] = array(
+				'name'  => (string) $t['table_name'],
+				'rows'  => (int) $t['row_count'],
+				'bytes' => (int) ( $t['size_bytes'] ?? 0 ),
+			);
+		}
+		return $out;
 	}
 
 	/**

@@ -187,6 +187,15 @@ final class SafeGrd_CLI {
 	 * [--only=<parts>]
 	 * : Restore only these parts, comma-separated: database, plugins, themes, uploads, others. Others is the rest of wp-content. Plugin settings are in the database.
 	 *
+	 * [--plugins=<names>]
+	 * : Restore only these plugins, comma-separated, by directory (akismet) or file (hello.php). Every other plugin stays as it is.
+	 *
+	 * [--themes=<names>]
+	 * : Restore only these themes, comma-separated, by directory.
+	 *
+	 * [--tables=<names>]
+	 * : Restore only these tables, comma-separated, with or without the table prefix (wp_posts or posts). The users table brings the backup's users.
+	 *
 	 * [--yes]
 	 * : Do not ask for confirmation.
 	 *
@@ -215,9 +224,11 @@ final class SafeGrd_CLI {
 					WP_CLI::error( sprintf( '%s is not a part of the site. Choose from: %s.', implode( ', ', $unknown ), implode( ', ', SafeGrd_Site::COMPONENTS ) ) );
 				}
 			}
-			$what = null === $only ? 'This site\'s database and content directory are replaced.' : sprintf( 'This site\'s %s are replaced.', implode( ', ', $only ) );
+			$items = self::items( $assoc, true );
+			$parts = SafeGrd_Restore::describe_parts( null === $only ? ( $items ? array_keys( $items ) : SafeGrd_Site::COMPONENTS ) : array_values( array_unique( array_merge( $only, array_keys( $items ) ) ) ), $items );
+			$what  = '' === $parts ? 'This site\'s database and content directory are replaced.' : sprintf( 'This site\'s %s are replaced.', $parts );
 			WP_CLI::confirm( sprintf( 'Restore %s onto %s? %s The current ones are kept aside.', $args[0], home_url(), $what ), $assoc );
-			$ok = SafeGrd_Restore::begin( $args[0], $only );
+			$ok = SafeGrd_Restore::begin( $args[0], $only, 'restore', $items );
 			if ( is_wp_error( $ok ) ) {
 				WP_CLI::error( $ok->get_error_message() );
 			}
@@ -241,16 +252,16 @@ final class SafeGrd_CLI {
 		if ( 'restored' !== $run['status'] ) {
 			WP_CLI::error( isset( $run['message'] ) ? $run['message'] : 'The restore did not finish.' );
 		}
-		$parts = (array) ( $run['components'] ?? SafeGrd_Site::COMPONENTS );
+		$parts = SafeGrd_Restore::describe_parts( (array) ( $run['components'] ?? SafeGrd_Site::COMPONENTS ), (array) ( $run['items'] ?? array() ) );
 		WP_CLI::line( sprintf( 'Restored %s of %s (taken %s): %d tables, %d rows, %d files', $run['snapshot_id'], $run['source_url'], $run['taken_at'], $run['tables'], $run['rows'], $run['files'] ) );
-		if ( count( $parts ) < count( SafeGrd_Site::COMPONENTS ) ) {
-			WP_CLI::line( '   Only: ' . implode( ', ', $parts ) );
+		if ( '' !== $parts ) {
+			WP_CLI::line( '   Only: ' . $parts );
 		}
 		foreach ( (array) $run['notes'] as $note ) {
 			WP_CLI::line( '   ' . $note );
 		}
 		WP_CLI::line( '   The replaced tables and files are kept aside. Delete them with: wp safegrd restore --delete-copy' );
-		if ( in_array( 'database', $parts, true ) ) {
+		if ( ! empty( $run['users'] ) ) {
 			WP_CLI::line( '   Sign in with an administrator account of the restored site.' );
 		}
 	}
@@ -266,6 +277,15 @@ final class SafeGrd_CLI {
 	 * <part>
 	 * : database, plugins, themes, uploads or others. Others is the rest of wp-content, with wp-config.php and .htaccess.
 	 *
+	 * [--plugins=<names>]
+	 * : With plugins: only these plugins, comma-separated, by directory or file.
+	 *
+	 * [--themes=<names>]
+	 * : With themes: only these themes, comma-separated.
+	 *
+	 * [--tables=<names>]
+	 * : With database: only these tables, comma-separated, with or without the table prefix.
+	 *
 	 * [--to=<file>]
 	 * : Copy the download here. Without it, the file stays on the server for a day and its path is printed.
 	 *
@@ -276,7 +296,7 @@ final class SafeGrd_CLI {
 	 */
 	public function download( $args, $assoc ) {
 		if ( ! SafeGrd_Restore::job() ) {
-			$ok = SafeGrd_Restore::begin( $args[0], array( $args[1] ), 'download' );
+			$ok = SafeGrd_Restore::begin( $args[0], array( $args[1] ), 'download', self::items( $assoc, false ) );
 			if ( is_wp_error( $ok ) ) {
 				WP_CLI::error( $ok->get_error_message() );
 			}
@@ -312,6 +332,70 @@ final class SafeGrd_CLI {
 			return;
 		}
 		WP_CLI::success( sprintf( '%s (%s), kept on this server until %s.', $file['path'], size_format( $run['bytes'], 1 ), wp_date( 'Y-m-d H:i', $run['expires'] ) ) );
+	}
+
+	/**
+	 * Lists the plugins, themes and tables a backup holds, with the version of each plugin and theme installed here.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <snapshot>
+	 * : The backup, from wp safegrd snapshots.
+	 *
+	 * [--format=<format>]
+	 * : table or json.
+	 * ---
+	 * default: table
+	 * ---
+	 *
+	 * @when after_wp_load
+	 */
+	public function contents( $args, $assoc ) {
+		$c = SafeGrd_Restore::contents( $args[0] );
+		if ( is_wp_error( $c ) ) {
+			WP_CLI::error( $c->get_error_message() );
+		}
+		if ( 'json' === ( $assoc['format'] ?? 'table' ) ) {
+			WP_CLI::line( (string) wp_json_encode( $c, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+			return;
+		}
+		foreach ( array( 'plugins' => 'Plugins', 'themes' => 'Themes' ) as $part => $label ) {
+			WP_CLI::line( $label . ':' );
+			if ( ! $c[ $part ] ) {
+				WP_CLI::line( '   none listed' );
+			}
+			foreach ( $c[ $part ] as $it ) {
+				$here = null === $it['installed'] ? 'not installed here' : ( $it['installed'] === $it['version'] ? 'same as installed' : $it['installed'] . ' installed' );
+				WP_CLI::line( sprintf( '   %-32s %-12s %s%s', $it['slug'], $it['version'], $here, $it['active'] ? ', was active' : '' ) );
+			}
+		}
+		WP_CLI::line( 'Tables:' );
+		foreach ( $c['tables'] as $t ) {
+			WP_CLI::line( sprintf( '   %-40s %10d rows  %s', $t['name'], $t['rows'], size_format( $t['bytes'], 1 ) ) );
+		}
+		WP_CLI::line( sprintf( 'Restore one with: wp safegrd restore %s --plugins=<name> (or --themes, --tables)', $args[0] ) );
+	}
+
+	/**
+	 * The plugins, themes and tables named with --plugins, --themes and
+	 * --tables, checked.
+	 *
+	 * @param array $assoc   The command's options.
+	 * @param bool  $restore Whether they are restored here.
+	 * @return array part => names.
+	 */
+	private static function items( array $assoc, $restore ) {
+		$items = array();
+		foreach ( array( 'plugins' => 'plugins', 'themes' => 'themes', 'tables' => 'database' ) as $flag => $part ) {
+			if ( isset( $assoc[ $flag ] ) ) {
+				$items[ $part ] = (string) $assoc[ $flag ];
+			}
+		}
+		$items = SafeGrd_Restore::check_items( $items, $restore );
+		if ( is_wp_error( $items ) ) {
+			WP_CLI::error( $items->get_error_message() );
+		}
+		return $items;
 	}
 
 	/**

@@ -29,9 +29,65 @@ final class SafeGrd_Admin {
 		add_action( 'wp_ajax_safegrd_status', array( __CLASS__, 'ajax_status' ) );
 		add_action( 'wp_ajax_safegrd_disconnect', array( __CLASS__, 'ajax_disconnect' ) );
 		add_action( 'wp_ajax_safegrd_restore_list', array( __CLASS__, 'ajax_restore_list' ) );
+		add_action( 'wp_ajax_safegrd_restore_items', array( __CLASS__, 'ajax_restore_items' ) );
 		add_action( 'wp_ajax_safegrd_restore_start', array( __CLASS__, 'ajax_restore_start' ) );
 		add_action( 'wp_ajax_safegrd_restore_delete_copy', array( __CLASS__, 'ajax_restore_delete_copy' ) );
 		add_filter( 'plugin_action_links_' . plugin_basename( SAFEGRD_FILE ), array( __CLASS__, 'action_links' ) );
+		add_action( 'admin_notices', array( __CLASS__, 'update_notice' ) );
+	}
+
+	/** The screens a site is updated from, where the last backup is shown. */
+	const UPDATE_SCREENS = array( 'update-core', 'plugins', 'themes' );
+
+	/**
+	 * On the Updates, Plugins and Themes screens: how old the last backup
+	 * is, with Back up now, so an update starts from a backup of the
+	 * versions it replaces. On Plugins and Themes only while updates wait.
+	 */
+	public static function update_notice() {
+		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		if ( ! $screen || ! in_array( $screen->id, self::UPDATE_SCREENS, true ) || ! current_user_can( 'manage_options' ) || ! SafeGrd_Settings::connected() || '' !== SafeGrd_Site::refusal() ) {
+			return;
+		}
+		if ( 'update-core' !== $screen->id && ! self::updates_waiting() ) {
+			return;
+		}
+		$run = SafeGrd_Settings::last_run();
+		$old = empty( $run['finished_at'] ) || 'completed' !== ( $run['status'] ?? '' ) || time() - strtotime( $run['finished_at'] ) > DAY_IN_SECONDS;
+		printf(
+			'<div class="notice notice-%s" id="safegrd-update-notice"><p><strong>SafeGrd:</strong> <span id="safegrd-update-last">%s</span> <button type="button" class="button button-small" id="safegrd-update-backup"%s>Back up now</button></p><p class="description">If an update breaks the site, restore that plugin or theme from the backup under <a href="%s">Tools, SafeGrd, Restore</a>.</p></div>',
+			esc_attr( $old ? 'warning' : 'info' ),
+			esc_html( self::describe_last_short() ),
+			disabled( SafeGrd_Backup::running(), true, false ),
+			esc_url( self::url() . '#restore' )
+		);
+	}
+
+	/** Whether WordPress has plugin or theme updates waiting. */
+	private static function updates_waiting() {
+		foreach ( array( 'update_plugins', 'update_themes' ) as $t ) {
+			$u = get_site_transient( $t );
+			if ( is_object( $u ) && ! empty( $u->response ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** The last backup in one sentence of plain text. */
+	public static function describe_last_short() {
+		$run = SafeGrd_Settings::last_run();
+		if ( ! $run ) {
+			return 'This site has no backup yet.';
+		}
+		switch ( $run['status'] ) {
+			case 'running':
+				return sprintf( 'Backing up now: %d files read, %s uploaded.', (int) ( $run['files'] ?? 0 ), size_format( (int) ( $run['bytes'] ?? 0 ), 1 ) );
+			case 'failed':
+				return 'The last backup failed: ' . rtrim( (string) $run['message'], '.' ) . '.';
+		}
+		$t = strtotime( (string) ( $run['finished_at'] ?? '' ) );
+		return $t ? sprintf( 'Last backup %s ago, %s.', human_time_diff( $t ), wp_date( 'Y-m-d H:i', $t ) ) : 'This site has no backup yet.';
 	}
 
 	public static function menu() {
@@ -48,6 +104,25 @@ final class SafeGrd_Admin {
 	}
 
 	public static function assets( $hook ) {
+		if ( in_array( $hook, array( 'update-core.php', 'plugins.php', 'themes.php' ), true ) ) {
+			if ( ! SafeGrd_Settings::connected() || ! current_user_can( 'manage_options' ) || ( 'update-core.php' !== $hook && ! self::updates_waiting() ) ) {
+				return;
+			}
+			// The last loopback check, without making one on these screens:
+			// unknown is taken as working, and WP-Cron stands behind it.
+			$loopback = get_transient( SafeGrd_Scheduler::LOOPBACK );
+			wp_enqueue_script( 'safegrd-updates', plugins_url( 'assets/updates.js', SAFEGRD_FILE ), array(), SAFEGRD_VERSION, true );
+			wp_localize_script(
+				'safegrd-updates',
+				'SafeGrdAdmin',
+				array(
+					'ajax'     => admin_url( 'admin-ajax.php' ),
+					'nonce'    => wp_create_nonce( self::NONCE ),
+					'loopback' => false === $loopback || '' === $loopback,
+				)
+			);
+			return;
+		}
 		if ( 'tools_page_' . self::PAGE !== $hook ) {
 			return;
 		}
@@ -216,7 +291,7 @@ final class SafeGrd_Admin {
 		<div class="safegrd-panel" data-panel="restore" hidden>
 			<div class="safegrd-card">
 				<h2>Restore, migrate or download</h2>
-				<p>Restore any WordPress backup in this account onto this site, all of it or only some parts: the database, plugins, themes, uploads, and the rest of wp-content. What a restore replaces is kept aside until you delete it. <code>wp-config.php</code> stays this site's own.</p>
+				<p>Restore any WordPress backup in this account onto this site, all of it or only some parts: the database, plugins, themes, uploads, and the rest of wp-content. Under <em>Choose plugins, themes or tables</em>, restore single ones, such as a plugin from before an update. What a restore replaces is kept aside until you delete it. <code>wp-config.php</code> stays this site's own.</p>
 				<p class="description">To migrate a site to a new host or domain, install WordPress and this plugin there, connect it to the same SafeGrd account, and restore the old site's backup with its database. The restore runs a search and replace from the old URL to the new one, serialized data included, and renames the tables to the new site's table prefix.</p>
 				<p class="description">Plugin and theme settings are in the database: restoring plugins alone brings back their files, not their settings.</p>
 				<div id="safegrd-restore-state"><?php echo wp_kses_post( self::describe_restore() ); ?></div>
@@ -381,8 +456,8 @@ final class SafeGrd_Admin {
 			$stages['database'] = sprintf( 'Writing the database dump: part %d of %d.', min( (int) ( $job['seq'] ?? 0 ) + 1, max( 1, $parts ) ), max( 1, $parts ) );
 			$stages['files']    = sprintf( 'Writing the files: %d of %d, %s so far.', (int) $job['files'], (int) ( $job['total_files'] ?? 0 ), size_format( (int) ( $job['bytes'] ?? 0 ), 1 ) );
 		}
-		$parts_of = (array) ( $job['components'] ?? SafeGrd_Site::COMPONENTS );
-		$what     = count( $parts_of ) < count( SafeGrd_Site::COMPONENTS ) ? ' (' . implode( ', ', $parts_of ) . ')' : '';
+		$parts_of = SafeGrd_Restore::describe_parts( (array) ( $job['components'] ?? SafeGrd_Site::COMPONENTS ), (array) ( $job['items'] ?? array() ) );
+		$what     = '' === $parts_of ? '' : ' (' . $parts_of . ')';
 		$s        = '<p><strong>' . ( $download ? 'Writing a download of ' : 'Restoring ' ) . esc_html( $job['snapshot_id'] . $what . $taken ) . '.</strong> ' . esc_html( $stages[ $job['stage'] ] ?? $job['stage'] ) . '</p>';
 		$s       .= '<p>' . esc_html(
 			sprintf(
@@ -410,11 +485,11 @@ final class SafeGrd_Admin {
 		if ( ! empty( $last['failed'] ) ) {
 			return '<p class="safegrd-warn"><strong>The restore of ' . esc_html( $last['snapshot_id'] ) . ' failed:</strong> ' . esc_html( $last['failed'] ) . '</p>';
 		}
-		$only = (array) ( $last['components'] ?? SafeGrd_Site::COMPONENTS );
+		$only = SafeGrd_Restore::describe_parts( (array) ( $last['components'] ?? SafeGrd_Site::COMPONENTS ), (array) ( $last['items'] ?? array() ) );
 		$s    = sprintf(
 			'<p><strong>Restored %s%s</strong> of %s on %s: %d tables, %d rows, %d files.</p>',
 			esc_html( $last['snapshot_id'] ),
-			esc_html( count( $only ) < count( SafeGrd_Site::COMPONENTS ) ? ' (' . implode( ', ', $only ) . ')' : '' ),
+			esc_html( '' === $only ? '' : ' (' . $only . ')' ),
 			esc_html( $last['source_url'] ),
 			esc_html( self::when( $last['restored_at'] ) ),
 			(int) $last['tables'],
@@ -688,13 +763,14 @@ final class SafeGrd_Admin {
 	public static function ajax_status() {
 		self::guard();
 		$out = array(
-			'running'   => SafeGrd_Backup::running(),
-			'restoring' => (bool) SafeGrd_Restore::job(),
-			'last'      => self::describe_run( SafeGrd_Settings::last_run() ),
-			'restore'   => self::describe_restore(),
-			'progress'  => self::describe_restore_progress(),
-			'downloads' => self::describe_downloads(),
-			'cadence'   => self::describe_cadence(),
+			'running'    => SafeGrd_Backup::running(),
+			'restoring'  => (bool) SafeGrd_Restore::job(),
+			'last'       => self::describe_run( SafeGrd_Settings::last_run() ),
+			'restore'    => self::describe_restore(),
+			'progress'   => self::describe_restore_progress(),
+			'downloads'  => self::describe_downloads(),
+			'cadence'    => self::describe_cadence(),
+			'last_short' => self::describe_last_short(),
 		);
 		if ( SafeGrd_Settings::connected() && empty( $_POST['local'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 			$client = SafeGrd_Client::for_site();
@@ -761,13 +837,33 @@ final class SafeGrd_Admin {
 		wp_send_json_success( array( 'snapshots' => $list ) );
 	}
 
+	/**
+	 * What a backup holds, for the picker: its plugins and themes with their
+	 * versions beside this site's, and its tables.
+	 */
+	public static function ajax_restore_items() {
+		self::guard();
+		$id  = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		$out = SafeGrd_Restore::contents( $id );
+		if ( is_wp_error( $out ) ) {
+			wp_send_json_error( array( 'message' => $out->get_error_message() ) );
+		}
+		foreach ( $out['tables'] as &$t ) {
+			$t['size'] = size_format( $t['bytes'], 1 );
+		}
+		unset( $t );
+		wp_send_json_success( $out );
+	}
+
 	public static function ajax_restore_start() {
 		self::guard();
 		// phpcs:disable WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 		$id    = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : '';
 		$parts = isset( $_POST['parts'] ) ? array_map( 'sanitize_key', explode( ',', sanitize_text_field( wp_unslash( $_POST['parts'] ) ) ) ) : null;
+		// Some plugins, themes or tables: {"plugins":["akismet"],"database":["wp_posts"]}. SafeGrd_Restore::check_items() checks every name.
+		$items = isset( $_POST['items'] ) ? json_decode( sanitize_text_field( wp_unslash( $_POST['items'] ) ), true ) : array();
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
-		$ok = SafeGrd_Restore::begin( $id, $parts );
+		$ok = SafeGrd_Restore::begin( $id, $parts, 'restore', is_array( $items ) ? $items : array() );
 		if ( is_wp_error( $ok ) ) {
 			wp_send_json_error( array( 'message' => $ok->get_error_message() ) );
 		}

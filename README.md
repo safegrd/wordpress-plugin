@@ -82,13 +82,26 @@ and confirm. The same page restores a site over itself.
 - Tick only some parts to restore those: the database, plugins, themes, uploads, and *others*
   (the rest of wp-content). Without the database the site keeps its content, settings and
   sign-in. This plugin always stays the version running.
+- *Choose plugins, themes or tables* lists what the backup holds, read from its manifest, with
+  the version of each plugin and theme installed now. Tick some to restore only those: each
+  replaces its own directory or table, and every other one stays. Restoring the users table
+  brings the backup's users with it; any other table leaves the sign-in as it is.
 
 ```sh
 wp safegrd snapshots
 wp safegrd restore snap-... --yes
 wp safegrd restore snap-... --only=plugins,themes --yes
+wp safegrd contents snap-...                     # plugins, themes and tables, with versions
+wp safegrd restore snap-... --plugins=akismet --yes
+wp safegrd restore snap-... --tables=wp_posts,wp_postmeta --yes
 wp safegrd restore --delete-copy
 ```
+
+## Before updates
+
+The Updates, Plugins and Themes screens show how old the last backup is, with *Back up now*,
+while plugin, theme or WordPress updates wait. If an update breaks the site, restore that plugin
+or theme alone from the backup taken before it.
 
 ## Download
 
@@ -100,6 +113,8 @@ administrator and deleted from the server a day later.
 ```sh
 wp safegrd download snap-... database --to=site.sql.gz
 wp safegrd download snap-... uploads --to=uploads.tar.gz
+wp safegrd download snap-... database --tables=wp_posts --to=posts.sql.gz
+wp safegrd download snap-... plugins --plugins=akismet --to=akismet.tar.gz
 ```
 
 The plugin restores backups taken with a SafeGrd-managed key. For a customer-managed key, use the

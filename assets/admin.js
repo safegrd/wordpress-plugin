@@ -460,6 +460,32 @@
 			});
 			pc.appendChild(fs);
 			pc.appendChild(el("p", "description", "Others is the rest of wp-content: mu-plugins, languages and what plugins keep there. Without the database, the site keeps its own content, settings and sign-in."));
+
+			// Single plugins, themes or tables, listed from the backup's
+			// manifest when asked for: reading it fetches from storage.
+			var chooser = el("p");
+			var choose = el("button", "button", "Choose plugins, themes or tables");
+			choose.type = "button";
+			chooser.appendChild(choose);
+			pc.appendChild(chooser);
+			var lists = el("div", "safegrd-items-wrap");
+			lists.hidden = true;
+			pc.appendChild(lists);
+			var picked = null;
+			choose.addEventListener("click", function () {
+				choose.disabled = true;
+				choose.textContent = "Reading the backup...";
+				post("safegrd_restore_items", { snapshot: s.id }).then(function (c) {
+					chooser.hidden = true;
+					picked = renderItems(lists, c, fs);
+					lists.hidden = false;
+				}).catch(function (e) {
+					choose.disabled = false;
+					choose.textContent = "Choose plugins, themes or tables";
+					notice("error", e.message);
+				});
+			});
+
 			var go = el("button", "button button-primary safegrd-restore-btn", "Restore");
 			go.type = "button";
 			go.addEventListener("click", function () {
@@ -468,7 +494,23 @@
 					notice("error", "Choose at least one part to restore.");
 					return;
 				}
-				startRestore(s, parts);
+				var items = {};
+				var empty = "";
+				if (picked) {
+					Object.keys(picked.groups).forEach(function (part) {
+						var boxes = picked.groups[part];
+						if (parts.indexOf(part) < 0 || !boxes.length) return;
+						var on = boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
+						if (!on.length) empty = part;
+						// Every one ticked is the whole part, as before choosing.
+						if (on.length < boxes.length) items[part] = on;
+					});
+				}
+				if (empty) {
+					notice("error", "Tick at least one of the " + (empty === "database" ? "tables" : empty) + ", or untick " + (empty === "database" ? "Database" : empty.charAt(0).toUpperCase() + empty.slice(1)) + ".");
+					return;
+				}
+				startRestore(s, parts, items, picked ? picked.prefix : "");
 			});
 			pc.appendChild(go);
 			btn.addEventListener("click", function () { pick.hidden = !pick.hidden; });
@@ -476,17 +518,79 @@
 		box.appendChild(table);
 	}
 
-	function startRestore(s, parts) {
-		var all = parts.length === PARTS.length;
+	// The picker's lists: each plugin, theme and table of the backup, all
+	// ticked, beside the version installed here. A list follows its part's
+	// box above it.
+	function renderItems(box, c, fs) {
+		var groups = {};
+		[["plugins", "Plugins", c.plugins], ["themes", "Themes", c.themes], ["database", "Tables", c.tables]].forEach(function (g) {
+			var f = el("fieldset", "safegrd-items");
+			f.appendChild(el("legend", "", g[1] + " in this backup"));
+			var boxes = [];
+			if (!g[2].length) {
+				f.appendChild(el("p", "description", "This backup lists none."));
+			}
+			if (g[2].length > 1) {
+				var bar = el("p", "safegrd-items-bar");
+				[["All", true], ["None", false]].forEach(function (a) {
+					var link = el("button", "button-link", a[0]);
+					link.type = "button";
+					link.addEventListener("click", function () { boxes.forEach(function (b) { b.checked = a[1]; }); });
+					bar.appendChild(link);
+				});
+				f.appendChild(bar);
+			}
+			var list = el("div", "safegrd-items-list");
+			g[2].forEach(function (it) {
+				var label = el("label");
+				var b = document.createElement("input");
+				b.type = "checkbox";
+				b.checked = true;
+				b.value = g[0] === "database" ? it.name : it.slug;
+				label.appendChild(b);
+				label.appendChild(document.createTextNode(" " + describeItem(g[0], it)));
+				list.appendChild(label);
+				boxes.push(b);
+			});
+			f.appendChild(list);
+			box.appendChild(f);
+			groups[g[0]] = boxes;
+			var part = fs.querySelector("input[value=" + g[0] + "]");
+			var sync = function () { f.disabled = !part.checked; };
+			part.addEventListener("change", sync);
+			sync();
+		});
+		box.appendChild(el("p", "description", "With every plugin ticked, the plugins directory is replaced, and plugins added since the backup are put aside. With some ticked, only those are replaced. The same goes for themes and tables."));
+		return { groups: groups, prefix: c.prefix || "" };
+	}
+
+	function describeItem(part, it) {
+		if (part === "database") {
+			return it.name + ", " + it.rows.toLocaleString() + " rows, " + it.size;
+		}
+		var here = it.installed === null || it.installed === undefined ? "not installed here"
+			: it.installed === it.version ? "the version installed" : it.installed + " installed";
+		return it.name + " " + it.version + " (" + here + ")";
+	}
+
+	function startRestore(s, parts, items, prefix) {
+		items = items || {};
+		var some = Object.keys(items).map(function (p) { return (p === "database" ? "tables" : p) + " " + items[p].join(", "); });
+		var all = parts.length === PARTS.length && !some.length;
+		var named = parts.filter(function (p) { return !items[p]; }).concat(some).join("; ");
 		var db = parts.indexOf("database") >= 0;
-		var msg = "Restore " + (all ? "the backup" : parts.join(", ") + " from the backup") + " of " + s.site + " taken " + s.taken + " onto this site?\n\n" +
-			(all ? "This site's database and content directory are replaced." : "This site's " + parts.join(", ") + " are replaced.") +
+		// The restored users table brings the backup's users, and ends this session.
+		var users = db && (!items.database || items.database.indexOf((prefix || "") + "users") >= 0);
+		var msg = "Restore " + (all ? "the backup" : named + " from the backup") + " of " + s.site + " taken " + s.taken + " onto this site?\n\n" +
+			(all ? "This site's database and content directory are replaced." : "This site's " + named + " are replaced.") +
 			" What they replace is kept aside until you delete it." +
-			(db ? "\n\nAfterwards this site's users are the backup's: sign in with an administrator account of the restored site." : "");
+			(users ? "\n\nAfterwards this site's users are the backup's: sign in with an administrator account of the restored site." : "");
 		if (!window.confirm(msg)) return;
 		setRestoring(true);
-		restoresDatabase = db;
-		post("safegrd_restore_start", { snapshot: s.id, parts: parts.join(",") }).then(function () {
+		restoresDatabase = users;
+		var body = { snapshot: s.id, parts: parts.join(",") };
+		if (some.length) body.items = JSON.stringify(items);
+		post("safegrd_restore_start", body).then(function () {
 			watchRestore(500);
 		}).catch(function (e) {
 			setRestoring(false);

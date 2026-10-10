@@ -29,3 +29,11 @@
 .safegrd .safegrd-parts legend { font-weight: 600; margin-bottom: 6px; }
 .safegrd .safegrd-parts label { display: inline-block; margin-right: 16px; }
 .safegrd .safegrd-log { background: #f6f7f7; border: 1px solid #dcdcde; padding: 8px 12px; max-height: 28em; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+.safegrd .safegrd-items { margin: 8px 0 12px; }
+.safegrd .safegrd-items legend { font-weight: 600; margin-bottom: 4px; }
+.safegrd .safegrd-items[disabled] { opacity: .5; }
+.safegrd .safegrd-items-bar { margin: 0 0 4px; }
+.safegrd .safegrd-items-bar .button-link { margin-right: 12px; }
+.safegrd .safegrd-items-list { max-height: 14em; overflow: auto; border: 1px solid #dcdcde; padding: 4px 8px; background: #fff; max-width: 40em; }
+.safegrd .safegrd-items-list label { display: block; margin: 2px 0; }
+.safegrd .safegrd-items-wrap[hidden], .safegrd p[hidden] { display: none; }
