@@ -27,17 +27,30 @@ final class SafeGrd_Connect {
 			return $ok;
 		}
 		$client = new SafeGrd_Client( $base );
-		$s      = $client->call( 'POST', '/api/v1/auth/cli/session', null, 15 );
+		// The approving page names this site from what the server recorded
+		// here, not from the link, which anyone can write.
+		$s = $client->call(
+			'POST',
+			'/api/v1/auth/cli/session',
+			array(
+				'client' => 'wordpress',
+				'site'   => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+			),
+			15
+		);
 		if ( is_wp_error( $s ) ) {
 			return $s;
 		}
-		if ( empty( $s['session_id'] ) || empty( $s['user_code'] ) ) {
+		if ( empty( $s['session_id'] ) || empty( $s['user_code'] ) || empty( $s['device_code'] ) ) {
 			return new WP_Error( 'safegrd_session', 'The server did not start a sign-in.' );
 		}
+		// The device code collects the token and stays on this site. The link
+		// names the sign-in only, and the person types the code shown here.
 		$session = array(
-			'session_id' => $s['session_id'],
-			'user_code'  => $s['user_code'],
-			'custody'    => 'local' === $custody ? 'local' : 'safegrd',
+			'session_id'  => $s['session_id'],
+			'user_code'   => $s['user_code'],
+			'device_code' => $s['device_code'],
+			'custody'     => 'local' === $custody ? 'local' : 'safegrd',
 		);
 		set_transient( self::SESSION, $session, 10 * MINUTE_IN_SECONDS );
 		$session['approve_url'] = self::approve_url( $base, $session );
@@ -48,9 +61,7 @@ final class SafeGrd_Connect {
 		return $base . '/auth/cli?' . http_build_query(
 			array(
 				'session' => $session['session_id'],
-				'code'    => $session['user_code'],
 				'client'  => 'wordpress',
-				'site'    => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
 			),
 			'',
 			'&',
@@ -76,9 +87,26 @@ final class SafeGrd_Connect {
 			);
 		}
 		$client = new SafeGrd_Client( SafeGrd_Settings::server_url() );
-		$s      = $client->call( 'GET', '/api/v1/auth/cli/session?session_id=' . rawurlencode( $session['session_id'] ), null, 15 );
+		$s      = $client->call(
+			'POST',
+			'/api/v1/auth/cli/session/poll',
+			array(
+				'session_id'  => $session['session_id'],
+				'device_code' => isset( $session['device_code'] ) ? $session['device_code'] : '',
+			),
+			15
+		);
 		if ( is_wp_error( $s ) ) {
+			$data = $s->get_error_data();
+			if ( is_array( $data ) && isset( $data['status'] ) && 404 === $data['status'] ) {
+				delete_transient( self::SESSION );
+				return new WP_Error( 'safegrd_expired', 'The server no longer knows this sign-in. Press Connect again.' );
+			}
 			return $s;
+		}
+		if ( isset( $s['status'] ) && 'expired' === $s['status'] ) {
+			delete_transient( self::SESSION );
+			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. Press Connect again.' );
 		}
 		if ( empty( $s['token'] ) || ( isset( $s['status'] ) && 'authorized' !== $s['status'] ) ) {
 			return array(

@@ -15,7 +15,7 @@ includes by default.
    or build it with `bin/build-zip.sh`.
 2. In wp-admin: Plugins, Add New, Upload Plugin, then Activate.
 3. Tools, SafeGrd: choose who keeps the key and press **Connect**. Sign in or create an account
-   in the tab that opens, and check the code matches.
+   in the tab that opens, and type the code wp-admin shows.
 
 The first backup starts right after connecting, then runs once a day.
 

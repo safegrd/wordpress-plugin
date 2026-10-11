@@ -218,7 +218,7 @@ final class SafeGrd_Admin {
 				<p><button type="button" class="button button-primary" id="safegrd-org-btn">Connect</button></p>
 			</div>
 			<div id="safegrd-waiting" hidden>
-				<p>Approve the sign-in in the tab that opened. Check that it shows this code:</p>
+				<p>In the tab that opened, sign in and type this code:</p>
 				<p class="safegrd-code" id="safegrd-code"></p>
 				<p>No tab opened? <a href="#" id="safegrd-approve-link" target="_blank" rel="noopener">Open the sign-in page</a>.</p>
 				<p class="description">This page refreshes periodically and finishes connecting once you approve.</p>

@@ -15,7 +15,7 @@ final class SafeGrd_CLI {
 	 * Connects this site to a SafeGrd account.
 	 *
 	 * Without --token it prints a URL and a code: open the URL on any device,
-	 * sign in or sign up, and check the code matches.
+	 * sign in or sign up, and type the code it prints.
 	 *
 	 * ## OPTIONS
 	 *
@@ -65,8 +65,8 @@ final class SafeGrd_CLI {
 			if ( is_wp_error( $s ) ) {
 				WP_CLI::error( $s->get_error_message() );
 			}
-			WP_CLI::line( 'Confirmation code: ' . $s['user_code'] );
-			WP_CLI::line( 'Open this URL on any device, sign in or sign up, and check the code matches:' );
+			WP_CLI::line( 'Code: ' . $s['user_code'] );
+			WP_CLI::line( 'Open this URL on any device, sign in or sign up, and type the code:' );
 			WP_CLI::line( '  ' . $s['approve_url'] );
 			WP_CLI::line( 'Waiting for the approval (up to 10 minutes).' );
 			$deadline = time() + 600;
