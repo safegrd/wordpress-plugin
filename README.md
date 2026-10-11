@@ -44,7 +44,9 @@ backs up this site only.
 Each backup is a complete snapshot of the site, stored incrementally: files are cut into 4 MiB
 chunks, encrypted and gathered into packs, and a run uploads only the chunks this month's
 repository does not hold yet. An unchanged image, theme or table costs nothing. The first
-backup of each month uploads everything once.
+backup of each month uploads everything once. Where the remote server keeps each backup on its
+own (the free plan's hosted storage), every backup opens a repository of its own and uploads
+everything.
 
 | Path in the snapshot | Contents |
 | :-- | :-- |

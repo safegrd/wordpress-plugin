@@ -238,6 +238,9 @@ final class SafeGrd_Backup {
 		$days  = max( 1, (int) ( $info['retention_days'] ?? 1 ) );
 		$class = empty( $view['opening_done'] ) ? 'opening' : 'later';
 		$lock  = strtotime( 'opening' === $class ? $epoch['opening_retain_until'] : $epoch['later_retain_until'] );
+		// Hosted storage may keep a backup past its lock: then the epoch
+		// holds that one backup, and keeps it t_mid_days from when it opened.
+		$kept  = max( $lock, strtotime( $epoch['opened_at'] ?? 'now' ) + (int) ( $epoch['t_mid_days'] ?? 0 ) * DAY_IN_SECONDS );
 		$this->job = array(
 			'snapshot_id' => 'snap-' . gmdate( 'Ymd-His', $now ) . '-' . substr( bin2hex( random_bytes( 4 ) ), 0, 6 ),
 			'run_id'      => bin2hex( random_bytes( 16 ) ),
@@ -252,6 +255,8 @@ final class SafeGrd_Backup {
 			// the date to show, as the server records it; retain is when the
 			// snapshot itself expires.
 			'locked'      => $lock,
+			// When hosted storage deletes it, when that is after the lock.
+			'kept'        => $kept > $lock ? $kept : null,
 			'started'     => $now,
 			'stage'       => 'database',
 			'cursor'      => null,
@@ -270,11 +275,13 @@ final class SafeGrd_Backup {
 		// Packs an earlier run uploaded and never committed are this run's
 		// now: its index lists them, so a snapshot can name them.
 		SafeGrd_Repo_Cache::adopt( $this->job['epoch_id'], $this->job['run_id'] );
-		$this->say(
-			! empty( $view['new'] )
-				? sprintf( 'Epoch %s opened: every file is uploaded once this month.', $this->job['epoch_id'] )
-				: sprintf( 'Incremental, in epoch %s: only what changed is uploaded.', $this->job['epoch_id'] )
-		);
+		if ( ! empty( $view['new'] ) && $this->job['kept'] ) {
+			$this->say( sprintf( 'Epoch %s opened: every file is uploaded. Hosted storage keeps each backup on its own.', $this->job['epoch_id'] ) );
+		} elseif ( ! empty( $view['new'] ) ) {
+			$this->say( sprintf( 'Epoch %s opened: every file is uploaded once this month.', $this->job['epoch_id'] ) );
+		} else {
+			$this->say( sprintf( 'Incremental, in epoch %s: only what changed is uploaded.', $this->job['epoch_id'] ) );
+		}
 		$this->save_job();
 		SafeGrd_Settings::record_run( $this->progress( 'running' ) );
 	}
@@ -992,6 +999,7 @@ final class SafeGrd_Backup {
 			'rows'        => $rows_total,
 			'files'       => $job['files'],
 			'retain'      => SafeGrd_Repo_Format::rfc3339( $job['locked'] ?? $job['retain'] ),
+			'kept'        => empty( $job['kept'] ) ? '' : SafeGrd_Repo_Format::rfc3339( $job['kept'] ),
 			'class'       => $job['class'],
 			'skipped'     => $job['skipped'],
 			'message'     => $message,

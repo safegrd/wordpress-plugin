@@ -45,7 +45,8 @@ final class SafeGrd_Connect {
 			return new WP_Error( 'safegrd_session', 'The server did not start a sign-in.' );
 		}
 		// The device code collects the token and stays on this site. The link
-		// names the sign-in only, and the person types the code shown here.
+		// names the sign-in, and carries the code shown here in its fragment,
+		// which a browser never sends to a server, for the person to check.
 		$session = array(
 			'session_id'  => $s['session_id'],
 			'user_code'   => $s['user_code'],
@@ -66,7 +67,7 @@ final class SafeGrd_Connect {
 			'',
 			'&',
 			PHP_QUERY_RFC3986
-		);
+		) . ( empty( $session['user_code'] ) ? '' : '#code=' . rawurlencode( $session['user_code'] ) );
 	}
 
 	/**

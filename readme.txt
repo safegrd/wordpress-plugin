@@ -18,7 +18,7 @@ The free plan covers one site. What each plan includes is at https://safegrd.dev
 
 = On Tools, SafeGrd =
 
-* Backups: one line saying whether the site is backed up, then the last backup, the next one and the last test restore, with how often your plan test-restores and when the next is due. Hosted storage used against what your plan includes, with SafeGrd's warning from 80%. Recent backups, each marked as the month's full upload or an incremental one, beside the site's size.
+* Backups: one line saying whether the site is backed up, then the last backup, the next one and the last test restore, with how often your plan test-restores and when the next is due. Hosted storage used against what your plan includes, with SafeGrd's warning from 80%. Recent backups, each marked as the month's full upload, an incremental one or a full copy, beside the site's size.
 * Restore & download: this site's backups, or any WordPress site's in the account. Open one to see what it holds, then restore all of it, some parts (database, plugins, themes, uploads, the rest of wp-content), or single plugins, themes or tables, each listed with the version installed now. A review lists what will be replaced first, and Put the copy back undoes the restore. Download a part, or single items, as a file. Migrate a site to a new host or domain the same way.
 * Updates, Plugins and Themes: how old the last backup is, with Back up now, while updates wait.
 * Settings: back up daily or weekly, from an hour you choose, and leave out paths or file names, such as *.zip.
@@ -31,7 +31,7 @@ The free plan covers one site. What each plan includes is at https://safegrd.dev
 * wp-config.php, .htaccess and wp-content: uploads, themes and plugins. Caches, the upgrade directory, debug.log and other backup plugins' archives are left out.
 * A manifest with the row count of every table, the site URL, and the WordPress and PHP versions.
 
-Each backup is a complete snapshot, stored incrementally: a run uploads only what changed since the last, so an unchanged image, theme or table is not uploaded again. The first backup of each month uploads everything once.
+Each backup is a complete snapshot, stored incrementally: a run uploads only what changed since the last, so an unchanged image, theme or table is not uploaded again. The first backup of each month uploads everything once. On the free plan each backup is a full copy instead: it is locked for its first day and kept up to 7 days.
 
 = The test restore =
 

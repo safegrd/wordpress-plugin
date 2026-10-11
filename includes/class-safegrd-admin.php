@@ -218,7 +218,7 @@ final class SafeGrd_Admin {
 				<p><button type="button" class="button button-primary" id="safegrd-org-btn">Connect</button></p>
 			</div>
 			<div id="safegrd-waiting" hidden>
-				<p>In the tab that opened, sign in and type this code:</p>
+				<p>In the tab that opened, sign in and check it shows this code:</p>
 				<p class="safegrd-code" id="safegrd-code"></p>
 				<p>No tab opened? <a href="#" id="safegrd-approve-link" target="_blank" rel="noopener">Open the sign-in page</a>.</p>
 				<p class="description">This page refreshes periodically and finishes connecting once you approve.</p>
@@ -287,7 +287,7 @@ final class SafeGrd_Admin {
 			</div>
 			<div class="safegrd-card">
 				<h2>Recent backups</h2>
-				<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. Every backup is still a full restore point.</p>
+				<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. On the free plan each backup is a full copy instead, kept on its own. Every backup is a full restore point.</p>
 				<div id="safegrd-snapshots"><p class="description">Asking SafeGrd...</p></div>
 			</div>
 		</div>
@@ -631,7 +631,7 @@ final class SafeGrd_Admin {
 					esc_html( (string) $run['seconds'] )
 				);
 				if ( ! empty( $run['retain'] ) ) {
-					$s .= ' Locked until ' . esc_html( substr( $run['retain'], 0, 10 ) ) . '.';
+					$s .= ' Locked until ' . esc_html( substr( $run['retain'], 0, 10 ) ) . ( empty( $run['kept'] ) ? '' : ', kept until ' . esc_html( substr( $run['kept'], 0, 10 ) ) ) . '.';
 				}
 				if ( ! empty( $run['message'] ) ) {
 					$s .= '<br><span class="safegrd-warn">' . esc_html( $run['message'] ) . '</span>';
@@ -839,8 +839,8 @@ final class SafeGrd_Admin {
 						'created' => self::when( $s['created_at'] ?? '' ),
 						'size'    => size_format( (int) ( $s['encrypted_size_bytes'] ?? 0 ), 1 ),
 						'site'    => size_format( (int) ( $s['raw_size_bytes'] ?? 0 ), 1 ),
-						'kind'    => 'opening' === ( $s['object_class'] ?? '' ) ? 'Full, the month\'s first' : ( 'later' === ( $s['object_class'] ?? '' ) ? 'Changes only' : '' ),
-						'locked'  => substr( (string) ( $s['worm_retention_until'] ?? '' ), 0, 10 ),
+						'kind'    => ! empty( $s['storage_kept_until'] ) ? 'Full copy' : ( 'opening' === ( $s['object_class'] ?? '' ) ? 'Full, the month\'s first' : ( 'later' === ( $s['object_class'] ?? '' ) ? 'Changes only' : '' ) ),
+						'locked'  => substr( (string) ( $s['worm_retention_until'] ?? '' ), 0, 10 ) . ( empty( $s['storage_kept_until'] ) ? '' : ', kept until ' . substr( (string) $s['storage_kept_until'], 0, 10 ) ),
 						'log'     => isset( $logs[ $s['snapshot_id'] ?? '' ] ),
 					);
 				}

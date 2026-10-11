@@ -15,7 +15,7 @@ final class SafeGrd_CLI {
 	 * Connects this site to a SafeGrd account.
 	 *
 	 * Without --token it prints a URL and a code: open the URL on any device,
-	 * sign in or sign up, and type the code it prints.
+	 * sign in or sign up, and check it shows the code it prints.
 	 *
 	 * ## OPTIONS
 	 *
@@ -66,7 +66,7 @@ final class SafeGrd_CLI {
 				WP_CLI::error( $s->get_error_message() );
 			}
 			WP_CLI::line( 'Code: ' . $s['user_code'] );
-			WP_CLI::line( 'Open this URL on any device, sign in or sign up, and type the code:' );
+			WP_CLI::line( 'Open this URL on any device, sign in or sign up, and check it shows this code:' );
 			WP_CLI::line( '  ' . $s['approve_url'] );
 			WP_CLI::line( 'Waiting for the approval (up to 10 minutes).' );
 			$deadline = time() + 600;
@@ -137,14 +137,18 @@ final class SafeGrd_CLI {
 		if ( 'completed' !== $run['status'] ) {
 			WP_CLI::error( isset( $run['message'] ) ? $run['message'] : 'The backup did not complete.' );
 		}
-		$how = 'opening' === $run['class'] ? 'every file, as the month\'s first' : 'only what changed';
+		if ( ! empty( $run['kept'] ) ) {
+			$how = 'every file, a full copy';
+		} else {
+			$how = 'opening' === $run['class'] ? 'every file, as the month\'s first' : 'only what changed';
+		}
 		WP_CLI::line( sprintf( 'Backed up %s (%s uploaded, %s, %ss)', $run['snapshot_id'], size_format( $run['bytes'], 1 ), $how, $run['seconds'] ) );
 		WP_CLI::line( sprintf( '   Database:  %d tables, %d rows', $run['tables'], $run['rows'] ) );
 		WP_CLI::line( sprintf( '   Files:     %d (%s)', $run['files'], size_format( $run['raw_bytes'], 1 ) ) );
 		WP_CLI::line( sprintf( '   Slices:    %d', $run['slices'] ) );
 		WP_CLI::line( sprintf( '   Memory:    %s peak', size_format( $run['peak_memory'], 1 ) ) );
 		if ( ! empty( $run['retain'] ) ) {
-			WP_CLI::line( '   Locked until ' . substr( $run['retain'], 0, 10 ) );
+			WP_CLI::line( '   Locked until ' . substr( $run['retain'], 0, 10 ) . ( empty( $run['kept'] ) ? '' : ', kept until ' . substr( $run['kept'], 0, 10 ) ) );
 		}
 		foreach ( array_slice( (array) $run['skipped'], 0, 20 ) as $s ) {
 			WP_CLI::line( '   Left out:  ' . $s );
