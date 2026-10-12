@@ -693,7 +693,7 @@ final class SafeGrd_Backup {
 			);
 			$this->job['logical'] += $size;
 		} else {
-			$fh = @fopen( $full, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streamed; an unreadable file is listed as skipped.
+			$fh = @fopen( $full, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- a local file under wp-content, read 1 MB at a time: it can be larger than memory; an unreadable file is listed as skipped.
 			if ( false === $fh ) {
 				$this->job['skipped'][] = substr( $rel, 6 ) . ' (could not be read)';
 				$this->job['cursor']    = $rel;

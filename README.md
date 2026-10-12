@@ -177,6 +177,14 @@ rendered with `rsvg-convert`), the icon (SafeGrd's brand mark) and the screensho
 `git config core.hooksPath .githooks` once per clone. The end-to-end test lives with the server's
 test suite and runs this plugin on the official WordPress image against a real server.
 
+Before a release, run Plugin Check against the built zip on a site with `WP_DEBUG` on
+(`wp plugin check safegrd-backup`), and search the diff for direct file calls. Files are
+written with `WP_Filesystem_Direct` (`SafeGrd_Restore::fs()`), and the only file handles
+opened for writing are in `SafeGrd_Stream`, for a file larger than memory and for the
+download archive, which is appended to across requests. A new `fopen`, `fwrite`,
+`file_put_contents`, `chmod` or `rmdir` anywhere else is a review finding on wordpress.org;
+every HTTP request goes through `wp_remote_request()`.
+
 ## Licence
 
 GPL-2.0-or-later. See `LICENSE`.

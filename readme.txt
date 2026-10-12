@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.7
+Stable tag: 0.1.8
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -144,6 +144,9 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
+
+= 0.1.8 =
+* Restored files are written through the WordPress filesystem API. Only a file larger than the memory a request may use, and the download archive, are written as a stream.
 
 = 0.1.7 =
 * Downloads are written under uploads/safegrd-downloads, not in wp-content, and the backup leaves that directory out.

@@ -414,7 +414,7 @@ final class SafeGrd_CLI {
 		}
 		$file = SafeGrd_Restore::download_file( $run['id'] );
 		if ( ! empty( $assoc['to'] ) ) {
-			if ( ! copy( $file['path'], $assoc['to'] ) ) {
+			if ( ! copy( $file['path'], $assoc['to'] ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_copy -- two local paths, the download and where the operator asked for it; WP_Filesystem_Direct::copy() reads the whole file into memory.
 				WP_CLI::error( 'Could not write ' . $assoc['to'] . '.' );
 			}
 			SafeGrd_Restore::delete_download( $run['id'] );

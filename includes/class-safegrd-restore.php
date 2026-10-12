@@ -754,31 +754,29 @@ final class SafeGrd_Restore {
 	 * not called, so FS_CHMOD_FILE is not defined: every put_contents()
 	 * here passes its mode.
 	 */
-	private static function fs() {
-		if ( ! class_exists( 'WP_Filesystem_Direct' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
-			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+	public static function fs() {
+		static $fs = null;
+		if ( null === $fs ) {
+			if ( ! class_exists( 'WP_Filesystem_Direct' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+				require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+			}
+			$fs = new WP_Filesystem_Direct( null );
 		}
-		return new WP_Filesystem_Direct( null );
+		return $fs;
 	}
 
 	/**
-	 * Writes the whole string to an open file, or throws: fwrite() can
-	 * write part of it, or nothing, when the disk is full or the host
-	 * stops the request, and a file written short must never be swapped
-	 * in or offered as a download.
+	 * The largest file put_contents() is given whole: a quarter of the
+	 * memory this request has left, up to 16 MB. A larger file is written
+	 * one blob at a time through SafeGrd_Stream.
 	 */
-	private static function write_all( $fh, $data, $path ) {
-		$left = strlen( $data );
-		$off  = 0;
-		while ( $left > 0 ) {
-			$n = @fwrite( $fh, $off ? substr( $data, $off ) : $data ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite,WordPress.PHP.NoSilencedErrors.Discouraged -- a local file under the content or uploads directory, written as a stream; PHP raises a notice for a failed write, and the next line throws for it.
-			if ( false === $n || 0 === $n ) {
-				throw new SafeGrd_Exception( esc_html( 'Could not write ' . $path . ': the disk may be full.' ), 'other' );
-			}
-			$off  += $n;
-			$left -= $n;
+	private static function whole_file_limit() {
+		$limit = wp_convert_hr_to_bytes( ini_get( 'memory_limit' ) );
+		if ( $limit <= 0 ) {
+			$limit = 256 * MB_IN_BYTES;
 		}
+		return (int) min( 16 * MB_IN_BYTES, max( MB_IN_BYTES, ( $limit - memory_get_usage() ) / 4 ) );
 	}
 
 	/**
@@ -1213,26 +1211,40 @@ final class SafeGrd_Restore {
 			if ( ! wp_mkdir_p( dirname( $dst ) ) ) {
 				throw new SafeGrd_Exception( esc_html( 'Could not create ' . dirname( $dst ) . '.' ), 'other' );
 			}
-			$fh = fopen( $dst, 'wb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- a file in the staging directory on this disk, written one blob at a time: it can be larger than memory, which WP_Filesystem::put_contents() cannot take.
-			if ( false === $fh ) {
-				throw new SafeGrd_Exception( esc_html( 'Could not write ' . $dst . '.' ), 'other' );
-			}
-			$h = hash_init( 'sha256' );
-			try {
-				foreach ( '' === $row['content'] ? array() : explode( ',', $row['content'] ) as $id ) {
+			$mode = (int) $row['mode'] & 0777;
+			$mode = $mode ? $mode | 0600 : self::FILE_MODE;
+			$ids  = '' === $row['content'] ? array() : explode( ',', $row['content'] );
+			$h    = hash_init( 'sha256' );
+			if ( (int) $row['size'] <= self::whole_file_limit() ) {
+				$data = '';
+				foreach ( $ids as $id ) {
 					$chunk = $this->reader->blob( $id );
 					hash_update( $h, $chunk );
-					self::write_all( $fh, $chunk, $dst );
+					$data .= $chunk;
 				}
-			} finally {
-				fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
-			}
-			if ( hash_final( $h ) !== $row['sha256'] ) {
-				throw new SafeGrd_Exception( esc_html( $row['path'] . ' does not match its SHA-256. Nothing was restored.' ), 'other' );
-			}
-			$mode = (int) $row['mode'] & 0777;
-			if ( $mode ) {
-				@chmod( $dst, $mode | 0600 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- a mode the host refuses is not worth failing for.
+				if ( hash_final( $h ) !== $row['sha256'] ) {
+					throw new SafeGrd_Exception( esc_html( $row['path'] . ' does not match its SHA-256. Nothing was restored.' ), 'other' );
+				}
+				if ( ! self::fs()->put_contents( $dst, $data, $mode ) ) {
+					throw new SafeGrd_Exception( esc_html( 'Could not write ' . $dst . ': the disk may be full.' ), 'other' );
+				}
+				unset( $data );
+			} else {
+				// Larger than this request may hold: one blob at a time.
+				$fh = SafeGrd_Stream::create( $dst );
+				try {
+					foreach ( $ids as $id ) {
+						$chunk = $this->reader->blob( $id );
+						hash_update( $h, $chunk );
+						$fh->write( $chunk );
+					}
+				} finally {
+					$fh->close();
+				}
+				if ( hash_final( $h ) !== $row['sha256'] ) {
+					throw new SafeGrd_Exception( esc_html( $row['path'] . ' does not match its SHA-256. Nothing was restored.' ), 'other' );
+				}
+				self::fs()->chmod( $dst, $mode ); // a mode the host refuses is not worth failing for
 			}
 			$this->job['files']++;
 			$this->job['bytes'] += (int) $row['size'];
@@ -1606,16 +1618,9 @@ final class SafeGrd_Restore {
 		$path = $this->out_path();
 		clearstatcache( true, $path );
 		if ( is_file( $path ) && filesize( $path ) > $this->job['out_bytes'] ) {
-			$fh = fopen( $path, 'r+b' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- the download being written, a local file; cut back to the last whole file.
-			if ( false === $fh || ! ftruncate( $fh, $this->job['out_bytes'] ) ) {
-				throw new SafeGrd_Exception( esc_html( 'Could not cut ' . $path . ' back to where the last slice stopped.' ), 'other' );
-			}
-			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+			SafeGrd_Stream::cut( $path, $this->job['out_bytes'] );
 		}
-		$out = fopen( $path, 'ab' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- the download, a local file under uploads, appended to one gzip member at a time across slices: larger than memory, which WP_Filesystem::put_contents() cannot take.
-		if ( false === $out ) {
-			throw new SafeGrd_Exception( esc_html( 'Could not write ' . $path . '.' ), 'other' );
-		}
+		$out     = SafeGrd_Stream::append( $path );
 		$tar     = 'database' !== $this->job['components'][0];
 		$buf     = '';
 		$flush   = function () use ( &$buf, $out, $path ) {
@@ -1624,7 +1629,7 @@ final class SafeGrd_Restore {
 				if ( false === $gz ) {
 					throw new SafeGrd_Exception( esc_html( 'Could not compress ' . $path . '.' ), 'other' );
 				}
-				self::write_all( $out, $gz, $path );
+				$out->write( $gz );
 				$buf = '';
 			}
 		};
@@ -1681,16 +1686,13 @@ final class SafeGrd_Restore {
 			$this->mark_written( $out );
 			return true;
 		} finally {
-			fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+			$out->close();
 		}
 	}
 
 	/** Records where the download stands: the next file, and its length so far. */
-	private function mark_written( $out ) {
-		if ( ! fflush( $out ) ) {
-			throw new SafeGrd_Exception( esc_html( 'Could not write ' . $this->out_path() . ': the disk may be full.' ), 'other' );
-		}
-		$this->job['out_bytes'] = (int) fstat( $out )['size'];
+	private function mark_written( SafeGrd_Stream $out ) {
+		$this->job['out_bytes'] = $out->written();
 		$this->save();
 	}
 
@@ -2159,6 +2161,11 @@ final class SafeGrd_Restore {
 		return array_values( array_diff( (array) scandir( $dir ), array( '.', '..' ) ) );
 	}
 
+	/**
+	 * Removes a directory of the plugin's own. Not WP_Filesystem_Direct::rmdir()
+	 * with recursive set: that follows a symbolic link to a directory and
+	 * empties its target, and a restored site may hold one.
+	 */
 	private static function rmdir( $dir ) {
 		if ( ! is_dir( $dir ) || is_link( $dir ) ) {
 			return;
@@ -2174,7 +2181,7 @@ final class SafeGrd_Restore {
 				wp_delete_file( $p );
 			}
 		}
-		@rmdir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
+		self::fs()->rmdir( $dir );
 	}
 
 	/**
