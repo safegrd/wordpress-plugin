@@ -198,8 +198,10 @@ final class SafeGrd_CLI {
 				}
 			)
 		);
+		$labels = SafeGrd_Updates::labels();
 		foreach ( $list as &$s ) {
 			$s['this_site'] = $s['node_id'] === $mine;
+			$s['label']     = $labels[ $s['id'] ] ?? '';
 		}
 		unset( $s );
 		if ( 'json' === ( $assoc['format'] ?? 'table' ) ) {
@@ -211,7 +213,7 @@ final class SafeGrd_CLI {
 			return;
 		}
 		foreach ( $list as $s ) {
-			WP_CLI::line( sprintf( '%s  %s  %s  %d tables, %d files, %s%s', $s['id'], substr( $s['taken'], 0, 16 ), $s['this_site'] ? 'this site' : $s['site'], $s['tables'], $s['files'], size_format( $s['size'], 1 ), $s['verified'] ? ', test-restored' : '' ) );
+			WP_CLI::line( sprintf( '%s  %s  %s  %d tables, %d files, %s%s', $s['id'], substr( $s['taken'], 0, 16 ), $s['this_site'] ? 'this site' : $s['site'], $s['tables'], $s['files'], size_format( $s['size'], 1 ), ( $s['verified'] ? ', test-restored' : '' ) . ( '' === $s['label'] ? '' : '. ' . $s['label'] ) ) );
 		}
 		WP_CLI::line( sprintf( 'Next: wp safegrd contents %s, then wp safegrd restore %s', $list[0]['id'], $list[0]['id'] ) );
 	}
@@ -489,21 +491,46 @@ final class SafeGrd_CLI {
 	}
 
 	/**
-	 * Sets how often this site backs up.
+	 * Sets how often this site backs up, and whether it backs up before updates.
 	 *
 	 * ## OPTIONS
 	 *
-	 * <frequency>
-	 * : daily or weekly.
+	 * [<frequency>]
+	 * : daily or weekly. Leave it out to keep the schedule.
 	 *
 	 * [--at=<hour>]
 	 * : The hour to start at, 0 to 23 in the site's timezone, or any. WP-Cron starts it at the first visit to the site after that hour.
+	 *
+	 * [--before-updates=<on|off>]
+	 * : Back up before a plugin, theme or core update. An update waits up to 20 seconds for the backup in wp-admin, and for the whole backup from WP-CLI.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp safegrd schedule daily --at=3
+	 *     wp safegrd schedule --before-updates=on
 	 *
 	 * @when after_wp_load
 	 */
 	public function schedule( $args, $assoc ) {
 		if ( ! SafeGrd_Settings::connected() ) {
 			WP_CLI::error( 'Not connected. Run wp safegrd connect first: connecting schedules the first backup at once.' );
+		}
+		if ( isset( $assoc['before-updates'] ) ) {
+			if ( ! in_array( $assoc['before-updates'], array( 'on', 'off' ), true ) ) {
+				WP_CLI::error( sprintf( '--before-updates=%s is not on or off.', $assoc['before-updates'] ) );
+			}
+			SafeGrd_Settings::update( array( 'before_updates' => 'on' === $assoc['before-updates'] ) );
+			WP_CLI::line( SafeGrd_Updates::enabled() ? 'Backs up before each plugin, theme or core update.' : 'Does not back up before updates.' );
+		}
+		if ( empty( $args[0] ) ) {
+			if ( ! isset( $assoc['before-updates'] ) ) {
+				WP_CLI::error( 'Name a schedule (daily or weekly), or pass --before-updates=on|off.' );
+			}
+			if ( isset( $assoc['at'] ) ) {
+				$args[0] = SafeGrd_Scheduler::frequency();
+			} else {
+				return;
+			}
 		}
 		$hour = null;
 		if ( isset( $assoc['at'] ) ) {
@@ -551,6 +578,7 @@ final class SafeGrd_CLI {
 		}
 		$next = SafeGrd_Scheduler::next_run();
 		WP_CLI::line( 'Next:     ' . ( $next ? gmdate( 'Y-m-d H:i', $next ) . ' UTC (' . SafeGrd_Scheduler::frequency() . ')' : 'not scheduled' ) );
+		WP_CLI::line( 'Updates:  ' . ( SafeGrd_Updates::enabled() ? 'backed up first' : 'not backed up first (wp safegrd schedule --before-updates=on)' ) );
 		$run = SafeGrd_Settings::last_run();
 		if ( ! $run ) {
 			WP_CLI::line( 'Last:     none yet' );
@@ -564,6 +592,9 @@ final class SafeGrd_CLI {
 			$line .= ' at ' . $run['finished_at'];
 		}
 		WP_CLI::line( $line );
+		if ( 'completed' === $run['status'] && '' !== SafeGrd_Updates::label( (string) $run['snapshot_id'] ) ) {
+			WP_CLI::line( '          ' . SafeGrd_Updates::label( (string) $run['snapshot_id'] ) );
+		}
 		if ( 'completed' === $run['status'] ) {
 			WP_CLI::line( sprintf( '          %d tables, %d rows, %d files, %s uploaded in %ss', (int) $run['tables'], (int) $run['rows'], (int) $run['files'], size_format( (int) $run['bytes'], 1 ), (string) $run['seconds'] ) );
 		}

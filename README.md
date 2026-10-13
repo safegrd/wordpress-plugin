@@ -111,9 +111,23 @@ wp safegrd logs                                  # the last runs (wp safegrd log
 
 ## Before updates
 
-The Updates, Plugins and Themes screens show how old the last backup is, with *Back up now*,
-while plugin, theme or WordPress updates wait. If an update breaks the site, restore that plugin
-or theme alone from the backup taken before it.
+Turn on *Back up before a plugin, theme or core update* under *Settings*, or run
+`wp safegrd schedule --before-updates=on`. It is off until you do. Each update from wp-admin,
+WP-CLI or WordPress's automatic updates then starts with a backup, labelled in *Recent backups*
+as "Before update: Akismet 5.3 to 5.3.1". A bulk update takes one backup for all of it.
+
+- An update in wp-admin or an automatic update waits up to 20 seconds for the backup, then goes
+  ahead while the backup finishes in the background. The database is read first, so a backup
+  that runs past 20 seconds may hold the updated plugin's files. From WP-CLI the update waits
+  for the whole backup.
+- No new backup when one finished in the last hour, or while a backup or restore is under way.
+  Updating this plugin takes none.
+- A failed backup does not stop the update. The failure is in the update's output and on
+  *Tools, SafeGrd*.
+
+The Updates, Plugins and Themes screens also show how old the last backup is, with *Back up
+now*, while updates wait. If an update breaks the site, restore that plugin or theme alone from
+the backup taken before it.
 
 ## Download
 

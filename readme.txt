@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.8
+Stable tag: 0.1.9
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -21,7 +21,7 @@ The free plan covers one site. What each plan includes is at https://safegrd.dev
 * Backups: one line saying whether the site is backed up, then the last backup, the next one and the last test restore, with how often your plan test-restores and when the next is due. Hosted storage used against what your plan includes, with SafeGrd's warning from 80%. Recent backups, each marked as the month's full upload, an incremental one or a full copy, beside the site's size.
 * Restore & download: this site's backups, or any WordPress site's in the account. Open one to see what it holds, then restore all of it, some parts (database, plugins, themes, uploads, the rest of wp-content), or single plugins, themes or tables, each listed with the version installed now. A review lists what will be replaced first, and Put the copy back undoes the restore. Download a part, or single items, as a file. Migrate a site to a new host or domain the same way.
 * Updates, Plugins and Themes: how old the last backup is, with Back up now, while updates wait.
-* Settings: back up daily or weekly, from an hour you choose, and leave out paths or file names, such as *.zip.
+* Settings: back up daily or weekly, from an hour you choose, and before each plugin, theme or core update if you turn it on. Leave out paths or file names, such as *.zip.
 * Logs: what the last 20 backups, restores and downloads printed.
 * Help: the WordPress guide, support, alerts, and diagnostics to copy into a request, with no token or key in them.
 
@@ -54,7 +54,7 @@ A backup runs in slices of a few seconds, each its own request, so shared and ma
 
 = WP-CLI =
 
-wp safegrd connect, backup, status, snapshots, contents, schedule, restore (with --only=plugins,themes, or --plugins, --themes and --tables for single ones, and --undo), download and logs do the same as Tools, SafeGrd, for a host with a shell and for a cron job where PHP has no time limit. WP-CLI is not needed to set up or run the plugin.
+wp safegrd connect, backup, status, snapshots, contents, schedule (with --before-updates=on|off), restore (with --only=plugins,themes, or --plugins, --themes and --tables for single ones, and --undo), download and logs do the same as Tools, SafeGrd, for a host with a shell and for a cron job where PHP has no time limit. WP-CLI is not needed to set up or run the plugin.
 
 == External service ==
 
@@ -99,9 +99,13 @@ Yes. Tick the parts to restore. Plugin and theme settings live in the database, 
 
 Yes. A restore keeps what it replaced. Put the copy back, on Tools, SafeGrd, Restore & download, swaps it back, and keeps the restored version aside, so pressing it again restores it again. With WP-CLI: wp safegrd restore --undo.
 
+= Can it back up before an update? =
+
+Yes, once you turn on Back up before a plugin, theme or core update under Tools, SafeGrd, Settings (off until you do). It covers updates from wp-admin, WP-CLI and automatic updates, and a bulk update takes one backup. In wp-admin and for automatic updates the update waits up to 20 seconds for the backup, then goes ahead while the backup finishes; files the backup had not read by then are backed up as updated. From WP-CLI the update waits for the whole backup. No new backup is taken when one finished in the last hour. A failed backup does not stop the update.
+
 = Can I roll back one plugin after a bad update? =
 
-Yes. On Tools, SafeGrd, Restore & download, open a backup from before the update, choose Some plugins only, and tick that plugin. Each is listed with the version in the backup and the one installed now. Only that plugin's files are replaced. Its settings stay as they are, since they live in the database. With WP-CLI: wp safegrd restore <snapshot> --plugins=akismet.
+Yes. On Tools, SafeGrd, Restore & download, open a backup from before the update (one taken by Back up before updates is labelled with the plugin and its versions), choose Some plugins only, and tick that plugin. Each is listed with the version in the backup and the one installed now. Only that plugin's files are replaced. Its settings stay as they are, since they live in the database. With WP-CLI: wp safegrd restore <snapshot> --plugins=akismet.
 
 = Can I restore one table? =
 
@@ -144,6 +148,9 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
+
+= 0.1.9 =
+* Back up before a plugin, theme or core update: a setting, off until you turn it on, under Tools, SafeGrd, Settings, or wp safegrd schedule --before-updates=on. The update waits up to 20 seconds for the backup in wp-admin and for the whole backup from WP-CLI, and goes ahead if the backup fails. Recent backups, the restore list and wp safegrd snapshots label such a backup "Before update: <plugin> <old> to <new>".
 
 = 0.1.8 =
 * Restored files are written through the WordPress filesystem API. Only a file larger than the memory a request may use, and the download archive, are written as a stream.

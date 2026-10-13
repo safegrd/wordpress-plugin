@@ -232,6 +232,7 @@
 			var t = row.insertCell();
 			t.appendChild(el("strong", "", s.created || ""));
 			t.appendChild(el("div", "safegrd-id", s.id));
+			if (s.label) t.appendChild(el("div", "description", s.label));
 			[s.kind, s.site, s.size, s.status, s.locked].forEach(function (v) {
 				text(row.insertCell(), v || "");
 			});
@@ -353,7 +354,8 @@
 			post("safegrd_save_settings", {
 				frequency: document.getElementById("safegrd-frequency").value,
 				hour: document.getElementById("safegrd-hour").value,
-				leave_out: document.getElementById("safegrd-exclude").value
+				leave_out: document.getElementById("safegrd-exclude").value,
+				before_updates: document.getElementById("safegrd-before-updates").checked ? "1" : "0"
 			}).then(function (r) {
 				document.getElementById("safegrd-next").textContent = r.next;
 				document.getElementById("safegrd-cadence").textContent = r.cadence;
@@ -504,6 +506,7 @@
 			var t = row.insertCell();
 			t.appendChild(el("strong", "", s.taken));
 			t.appendChild(el("div", "safegrd-id", s.id));
+			if (s.label) t.appendChild(el("div", "description", s.label));
 			text(row.insertCell(), s.node_id === cfg.node ? "This site" : host(s.site));
 			text(row.insertCell(), plural(s.tables, "table") + ", " + plural(s.files, "file") + ", " + s.size);
 			text(row.insertCell(), s.verified ? "Passed" : "");

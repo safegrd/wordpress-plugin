@@ -54,13 +54,17 @@ final class SafeGrd_Admin {
 		if ( 'update-core' !== $screen->id && ! self::updates_waiting() ) {
 			return;
 		}
-		$run = SafeGrd_Settings::last_run();
-		$old = empty( $run['finished_at'] ) || 'completed' !== ( $run['status'] ?? '' ) || time() - strtotime( $run['finished_at'] ) > DAY_IN_SECONDS;
+		$run    = SafeGrd_Settings::last_run();
+		$before = SafeGrd_Updates::enabled();
+		$old    = ! $before && ( empty( $run['finished_at'] ) || 'completed' !== ( $run['status'] ?? '' ) || time() - strtotime( $run['finished_at'] ) > DAY_IN_SECONDS );
 		printf(
-			'<div class="notice notice-%s" id="safegrd-update-notice"><p><strong>SafeGrd:</strong> <span id="safegrd-update-last">%s</span> <button type="button" class="button button-small" id="safegrd-update-backup"%s>Back up now</button></p><p class="description">If an update breaks the site, restore that plugin or theme from the backup under <a href="%s">Tools, SafeGrd, Restore</a>.</p></div>',
+			'<div class="notice notice-%s" id="safegrd-update-notice"><p><strong>SafeGrd:</strong> <span id="safegrd-update-last">%s</span> <button type="button" class="button button-small" id="safegrd-update-backup"%s>Back up now</button></p><p class="description">%s If an update breaks the site, restore that plugin or theme from the backup under <a href="%s">Tools, SafeGrd, Restore</a>.</p></div>',
 			esc_attr( $old ? 'warning' : 'info' ),
 			esc_html( self::describe_last_short() ),
 			disabled( SafeGrd_Backup::running(), true, false ),
+			$before
+				? esc_html( 'Each update starts with a backup, unless one finished in the last hour.' )
+				: sprintf( 'To back up before every update, turn it on under <a href="%s">Tools, SafeGrd, Settings</a>.', esc_url( self::url() . '#settings' ) ),
 			esc_url( self::url() . '#restore' )
 		);
 	}
@@ -338,6 +342,11 @@ final class SafeGrd_Admin {
 				</table>
 			</div>
 			<div class="safegrd-card">
+				<h2>Updates</h2>
+				<p><label><input type="checkbox" id="safegrd-before-updates" value="1" <?php checked( SafeGrd_Updates::enabled() ); ?>> Back up before a plugin, theme or core update</label></p>
+				<p class="description">Covers updates from wp-admin, WP-CLI and automatic updates. An update waits up to <?php echo esc_html( (string) SafeGrd_Updates::WAIT ); ?> seconds for the backup, then goes ahead while the backup finishes in the background. From WP-CLI it waits for the whole backup. No new backup when one finished in the last hour. A failed backup does not stop the update.</p>
+			</div>
+			<div class="safegrd-card">
 				<h2>Leave out of backups</h2>
 				<p class="description">One per line. A path from the site root leaves out everything under it, such as <code><?php echo esc_html( SafeGrd_Site::content_path() ); ?>/ewww</code>. A name leaves out files and directories of that name anywhere but uploads, such as <code>*.zip</code> or <code>node_modules</code>. Uploads stay in every backup: the test restore checks that every attachment the database names is there.</p>
 				<p class="description">Already left out: caches, the upgrade directory, debug.log, and other backup plugins' archives.</p>
@@ -566,7 +575,7 @@ final class SafeGrd_Admin {
 			'WordPress ' . get_bloginfo( 'version' ) . ', PHP ' . PHP_VERSION . ', ' . ( method_exists( $wpdb, 'db_server_info' ) ? $wpdb->db_server_info() : 'database unknown' ),
 			'Site ' . home_url() . ( is_multisite() ? ' (multisite)' : '' ),
 			'Server ' . SafeGrd_Settings::server_url() . ', node ' . SafeGrd_Settings::get( 'node_id' ) . ', organization ' . SafeGrd_Settings::get( 'org_id' ),
-			'Key ' . ( 'safegrd' === SafeGrd_Settings::get( 'key_custody' ) ? 'SafeGrd-managed' : 'customer-managed' ) . ', schedule ' . SafeGrd_Scheduler::frequency(),
+			'Key ' . ( 'safegrd' === SafeGrd_Settings::get( 'key_custody' ) ? 'SafeGrd-managed' : 'customer-managed' ) . ', schedule ' . SafeGrd_Scheduler::frequency() . ( SafeGrd_Updates::enabled() ? ', and before updates' : '' ),
 			'max_execution_time ' . (int) ini_get( 'max_execution_time' ) . ', memory_limit ' . ini_get( 'memory_limit' ) . ', slice ' . SafeGrd_Backup::default_budget() . ' s',
 			'WP-Cron ' . ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ? 'disabled (DISABLE_WP_CRON)' : 'on' ) . ( defined( 'ALTERNATE_WP_CRON' ) && ALTERNATE_WP_CRON ? ', ALTERNATE_WP_CRON' : '' ),
 			'Loopback ' . ( '' === SafeGrd_Scheduler::loopback_problem() ? 'works' : SafeGrd_Scheduler::loopback_problem() ),
@@ -632,6 +641,10 @@ final class SafeGrd_Admin {
 				);
 				if ( ! empty( $run['retain'] ) ) {
 					$s .= ' Locked until ' . esc_html( substr( $run['retain'], 0, 10 ) ) . ( empty( $run['kept'] ) ? '' : ', kept until ' . esc_html( substr( $run['kept'], 0, 10 ) ) ) . '.';
+				}
+				$label = SafeGrd_Updates::label( (string) ( $run['snapshot_id'] ?? '' ) );
+				if ( '' !== $label ) {
+					$s .= '<br>' . esc_html( $label ) . '.';
 				}
 				if ( ! empty( $run['message'] ) ) {
 					$s .= '<br><span class="safegrd-warn">' . esc_html( $run['message'] ) . '</span>';
@@ -776,6 +789,7 @@ final class SafeGrd_Admin {
 		$f    = isset( $_POST['frequency'] ) ? sanitize_key( wp_unslash( $_POST['frequency'] ) ) : '';
 		$hour = isset( $_POST['hour'] ) ? (int) $_POST['hour'] : -1;
 		$text = isset( $_POST['leave_out'] ) ? sanitize_textarea_field( wp_unslash( $_POST['leave_out'] ) ) : '';
+		$upd  = isset( $_POST['before_updates'] ) && '1' === $_POST['before_updates'];
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 		$exclude = SafeGrd_Site::check_exclusions( $text );
 		if ( is_wp_error( $exclude ) ) {
@@ -784,7 +798,12 @@ final class SafeGrd_Admin {
 		if ( ! SafeGrd_Scheduler::set_frequency( $f, $hour ) ) {
 			wp_send_json_error( array( 'message' => 'Choose daily or weekly, and an hour from 00:00 to 23:00.' ) );
 		}
-		SafeGrd_Settings::update( array( 'leave_out' => $exclude ) );
+		SafeGrd_Settings::update(
+			array(
+				'leave_out'      => $exclude,
+				'before_updates' => $upd,
+			)
+		);
 		SafeGrd_Backup::report_schedule();
 		$next = SafeGrd_Scheduler::next_run();
 		wp_send_json_success(
@@ -792,7 +811,7 @@ final class SafeGrd_Admin {
 				'next'    => wp_date( 'Y-m-d H:i', $next ),
 				'cadence' => self::describe_cadence(),
 				'leave_out' => implode( "\n", $exclude ),
-				'message' => sprintf( 'Saved. Backs up %s. The next is due %s.', strtolower( self::describe_cadence() ), wp_date( 'Y-m-d H:i', $next ) ),
+				'message' => sprintf( 'Saved. Backs up %s%s. The next is due %s.', strtolower( self::describe_cadence() ), $upd ? ', and before each update' : '', wp_date( 'Y-m-d H:i', $next ) ),
 			)
 		);
 	}
@@ -827,6 +846,7 @@ final class SafeGrd_Admin {
 			$snaps  = $client->call( 'GET', '/api/v1/snapshots?node_id=' . $node . '&limit=5', null, 15 );
 			if ( ! is_wp_error( $snaps ) ) {
 				$logs             = SafeGrd_Log::all();
+				$labels           = SafeGrd_Updates::labels();
 				$out['snapshots'] = array();
 				foreach ( ( isset( $snaps['items'] ) ? $snaps['items'] : $snaps ) as $s ) {
 					$out['snapshots'][] = array(
@@ -842,6 +862,7 @@ final class SafeGrd_Admin {
 						'kind'    => ! empty( $s['storage_kept_until'] ) ? 'Full copy' : ( 'opening' === ( $s['object_class'] ?? '' ) ? 'Full, the month\'s first' : ( 'later' === ( $s['object_class'] ?? '' ) ? 'Changes only' : '' ) ),
 						'locked'  => substr( (string) ( $s['worm_retention_until'] ?? '' ), 0, 10 ) . ( empty( $s['storage_kept_until'] ) ? '' : ', kept until ' . substr( (string) $s['storage_kept_until'], 0, 10 ) ),
 						'log'     => isset( $logs[ $s['snapshot_id'] ?? '' ] ),
+						'label'   => $labels[ $s['snapshot_id'] ?? '' ] ?? '',
 					);
 				}
 			} else {
@@ -882,7 +903,9 @@ final class SafeGrd_Admin {
 		if ( is_wp_error( $list ) ) {
 			wp_send_json_error( array( 'message' => $list->get_error_message() ) );
 		}
+		$labels = SafeGrd_Updates::labels();
 		foreach ( $list as &$s ) {
+			$s['label'] = $labels[ $s['id'] ] ?? '';
 			$s['taken'] = self::when( $s['taken'] );
 			$s['size']  = size_format( $s['size'], 1 );
 		}

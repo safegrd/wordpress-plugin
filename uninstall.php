@@ -34,6 +34,7 @@ wp_clear_scheduled_hook( 'safegrd_backup_now' );
 wp_unschedule_hook( 'safegrd_continue' );
 wp_clear_scheduled_hook( 'safegrd_expire_downloads' );
 delete_option( 'safegrd_logs' );
+delete_option( 'safegrd_update_labels' );
 delete_option( 'safegrd_downloads' );
 delete_option( 'safegrd_download_failed' );
 // Downloads still on the server: decrypted copies of the site, under uploads/safegrd-downloads.

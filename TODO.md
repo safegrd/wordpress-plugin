@@ -5,36 +5,6 @@ loses a backup. Each says what breaks and when.
 
 P0 items come first: features the UpdraftPlus reviews show customers rely on.
 
-## P0: Back up before a plugin, theme or core update
-
-The most common story in UpdraftPlus's reviews is "an update broke my site and the backup saved
-it". Today the Updates, Plugins and Themes screens show how old the last backup is, with Back up
-now (`SafeGrd_Admin::update_notice`), and the operator has to remember to press it.
-
-Do: take a backup automatically before WordPress installs an update.
-
-- Hook `upgrader_pre_install` (fires for plugins, themes and core, manual or auto) and
-  `pre_auto_update` if the first misses background updates. Start a backup the way Back up now
-  does (`SafeGrd_Scheduler::backup_now()`), and let the update continue only once it has finished
-  or been skipped. A bulk update fires the hook once per item: take one backup for the batch.
-- Skip when the last completed backup is newer than a threshold (an hour by default; keep it a
-  constant, not a setting, to start). Skip when the site is not connected, a backup or restore is
-  already running, or the plugin being updated is this one.
-- A backup runs in slices over several requests, so it cannot block the updater's request. Options:
-  run slices inline from the hook up to a time budget (about 20 s) and carry on if it is not done,
-  or only start it and tell the operator. Decide, and write the limit in the readme; do not claim
-  the update waited when it did not.
-- A pre-update backup is a normal backup: it counts toward storage and retention, and is labelled
-  in Recent backups as "Before update: <plugin> <old> to <new>". Add the label to the job and the
-  snapshot's metadata.
-- If the backup fails, the update still proceeds (a failed backup must not hold the site on a
-  vulnerable plugin), and the failure is shown on Tools, SafeGrd and goes through the email below.
-- Setting on Tools, Settings: "Back up before updates", on by default. WP-CLI: `wp safegrd schedule
-  --before-updates=on|off`.
-- Tests: update a plugin through `Plugin_Upgrader` in the integration suite and assert a snapshot
-  exists with the label, one backup for a bulk update of three, none when a fresh one exists.
-- Update the readme (description, FAQ "Can I roll back one plugin after a bad update?", changelog).
-
 ## P0: Email the site owner when a backup or test restore fails
 
 Alerts exist on the server: email and Slack for a failed backup or test restore, set in the

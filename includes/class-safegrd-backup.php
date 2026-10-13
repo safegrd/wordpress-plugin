@@ -103,6 +103,14 @@ final class SafeGrd_Backup {
 	 */
 	public $chain = true;
 
+	/**
+	 * What a backup this slice starts was taken for, such as "Before update:
+	 * Akismet 5.3 to 5.3.1", or '' for a scheduled or requested one.
+	 *
+	 * @var string
+	 */
+	public $label = '';
+
 	public function __construct( $say = null, $budget = null ) {
 		$this->say    = $say;
 		$this->budget = null === $budget ? self::default_budget() : (float) $budget;
@@ -203,6 +211,7 @@ final class SafeGrd_Backup {
 			}
 			$run = $this->finish();
 			SafeGrd_Log::finish( $run['snapshot_id'], 'backup', $run['snapshot_id'], 'completed' );
+			SafeGrd_Updates::set_label( $run['snapshot_id'], $run['label'] );
 			delete_option( self::JOB );
 			delete_option( self::DOING );
 			SafeGrd_Scheduler::continue_cancel();
@@ -271,6 +280,7 @@ final class SafeGrd_Backup {
 			'excluded'    => array(),
 			'db'          => null,
 			'slices'      => 0,
+			'label'       => (string) $this->label,
 		);
 		// Packs an earlier run uploaded and never committed are this run's
 		// now: its index lists them, so a snapshot can name them.
@@ -786,6 +796,9 @@ final class SafeGrd_Backup {
 		if ( $job['skipped'] ) {
 			$wordpress['skipped'] = array_slice( $job['skipped'], 0, 100 );
 		}
+		if ( ! empty( $job['label'] ) ) {
+			$wordpress['label'] = $job['label'];
+		}
 		$meta = array(
 			'snapshot_id'      => $job['snapshot_id'],
 			'node_id'          => SafeGrd_Settings::get( 'node_id' ),
@@ -1003,6 +1016,7 @@ final class SafeGrd_Backup {
 			'class'       => $job['class'],
 			'skipped'     => $job['skipped'],
 			'message'     => $message,
+			'label'       => (string) ( $job['label'] ?? '' ),
 			'peak_memory' => memory_get_peak_usage( true ),
 		);
 	}
