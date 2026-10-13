@@ -115,6 +115,8 @@ Turn on *Back up before a plugin, theme or core update* under *Settings*, or run
 `wp safegrd schedule --before-updates=on`. It is off until you do. Each update from wp-admin,
 WP-CLI or WordPress's automatic updates then starts with a backup, labelled in *Recent backups*
 as "Before update: Akismet 5.3 to 5.3.1". A bulk update takes one backup for all of it.
+WordPress puts the site in maintenance mode before a bulk update that includes an active plugin
+or theme, so visitors see the maintenance page while that backup runs.
 
 - An update in wp-admin or an automatic update waits up to 20 seconds for the backup, then goes
   ahead while the backup finishes in the background. The database is read first, so a backup

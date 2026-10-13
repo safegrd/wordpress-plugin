@@ -101,7 +101,7 @@ Yes. A restore keeps what it replaced. Put the copy back, on Tools, SafeGrd, Res
 
 = Can it back up before an update? =
 
-Yes, once you turn on Back up before a plugin, theme or core update under Tools, SafeGrd, Settings (off until you do). It covers updates from wp-admin, WP-CLI and automatic updates, and a bulk update takes one backup. In wp-admin and for automatic updates the update waits up to 20 seconds for the backup, then goes ahead while the backup finishes; files the backup had not read by then are backed up as updated. From WP-CLI the update waits for the whole backup. No new backup is taken when one finished in the last hour. A failed backup does not stop the update.
+Yes, once you turn on Back up before a plugin, theme or core update under Tools, SafeGrd, Settings (off until you do). It covers updates from wp-admin, WP-CLI and automatic updates, and a bulk update takes one backup. A bulk update that includes an active plugin or theme puts the site in maintenance mode before the backup starts, so visitors see the maintenance page while it runs. In wp-admin and for automatic updates the update waits up to 20 seconds for the backup, then goes ahead while the backup finishes; files the backup had not read by then are backed up as updated. From WP-CLI the update waits for the whole backup. No new backup is taken when one finished in the last hour. A failed backup does not stop the update.
 
 = Can I roll back one plugin after a bad update? =
 

@@ -344,7 +344,7 @@ final class SafeGrd_Admin {
 			<div class="safegrd-card">
 				<h2>Updates</h2>
 				<p><label><input type="checkbox" id="safegrd-before-updates" value="1" <?php checked( SafeGrd_Updates::enabled() ); ?>> Back up before a plugin, theme or core update</label></p>
-				<p class="description">Covers updates from wp-admin, WP-CLI and automatic updates. An update waits up to <?php echo esc_html( (string) SafeGrd_Updates::WAIT ); ?> seconds for the backup, then goes ahead while the backup finishes in the background. From WP-CLI it waits for the whole backup. No new backup when one finished in the last hour. A failed backup does not stop the update.</p>
+				<p class="description">Covers updates from wp-admin, WP-CLI and automatic updates. An update waits up to <?php echo esc_html( (string) SafeGrd_Updates::WAIT ); ?> seconds for the backup, then goes ahead while the backup finishes in the background. From WP-CLI it waits for the whole backup. No new backup when one finished in the last hour. A failed backup does not stop the update. A bulk update that includes an active plugin or theme puts the site in maintenance mode before the backup starts, so visitors see the maintenance page while it runs.</p>
 			</div>
 			<div class="safegrd-card">
 				<h2>Leave out of backups</h2>
