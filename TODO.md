@@ -91,12 +91,14 @@ it was.
 Fix: name the file being read in `safegrd_backup_doing` for every file that takes more than a
 second to read, not only by size.
 
-## Disconnecting while a slice runs
+## A restored foreign key loses its name
 
-`SafeGrd_Connect::disconnect()` drops the cache tables while a backup slice may be using them.
-A slice writing its snapshot then reads an empty file list and fails with "The snapshot would
-name 1 blobs this site has no record of storing": the check refuses the snapshot, so nothing
-broken is stored, but the run fails for no reason the operator can see.
+`SafeGrd_Restore::statement()` drops the names of foreign keys and checks from each
+`CREATE TABLE`, because MySQL wants every name unique in the database and the live table
+beside the restore's copy holds the same ones. MySQL then names them after the table
+(`<table>_ibfk_1`). A plugin that looks for its constraint by name adds it
+again: WooCommerce does, on its next database update, and the table then has two
+identical foreign keys. Nothing breaks.
 
-Fix: take the slice lock in `disconnect()`, waiting a few seconds for the running slice, or
-refuse while a backup or restore is under way.
+Fix: after the swap, rename each one back with `ALTER TABLE ... DROP FOREIGN KEY ...,
+ADD CONSTRAINT <name> ...`, from the names the dump held, with the live prefix.

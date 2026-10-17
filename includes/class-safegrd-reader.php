@@ -244,6 +244,16 @@ final class SafeGrd_Repo_Reader {
 				continue;
 			}
 			$code = (int) wp_remote_retrieve_response_code( $resp );
+			if ( 403 === $code ) {
+				// The link expired while the slice waited, or the clock here
+				// runs ahead of storage's: sign it again before the next try.
+				unset( $this->urls[ $key ] );
+				$this->urls( array( $key ) );
+				if ( empty( $this->urls[ $key ] ) ) {
+					break;
+				}
+				continue;
+			}
 			$body = wp_remote_retrieve_body( $resp );
 			if ( ( 200 === $code && null === $from ) || ( 206 === $code && strlen( $body ) === $length ) ) {
 				return $body;
@@ -457,13 +467,24 @@ final class SafeGrd_Repo_Reader {
 		return $t['entries'];
 	}
 
+	/** Whether a name from a tree is one entry of a directory, nothing more. */
+	public static function safe_name( $name ) {
+		return '' !== $name && '.' !== $name && '..' !== $name && false === strpos( $name, '/' ) && false === strpos( $name, "\0" );
+	}
+
 	/**
 	 * Every file under a tree, depth first, as [path, entry].
 	 */
 	public function walk( $root, $prefix = '' ) {
 		$out = array();
 		foreach ( $this->tree( $root ) as $e ) {
-			$name = isset( $e['name'] ) ? $e['name'] : base64_decode( $e['name_b64'] );
+			$name = isset( $e['name'] ) ? (string) $e['name'] : (string) base64_decode( (string) ( $e['name_b64'] ?? '' ), true );
+			if ( ! self::safe_name( $name ) ) {
+				// A restore writes each path under its staging directory and a
+				// download names it in a tar: "..", a slash or a NUL in a name
+				// would reach outside either.
+				throw new SafeGrd_Exception( esc_html( sprintf( 'The backup names a file "%s" under %s, which is not a file name. Nothing was restored.', substr( $name, 0, 80 ), '' === $prefix ? 'its root' : $prefix ) ), 'other' );
+			}
 			$path = '' === $prefix ? $name : $prefix . '/' . $name;
 			if ( 'dir' === $e['type'] ) {
 				$out[] = array( $path, $e );

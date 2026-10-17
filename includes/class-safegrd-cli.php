@@ -297,11 +297,19 @@ final class SafeGrd_CLI {
 			return;
 		}
 		if ( ! empty( $assoc['delete-older'] ) ) {
-			WP_CLI::line( SafeGrd_Restore::delete_older_copies() );
+			$said = SafeGrd_Restore::delete_older_copies();
+			if ( is_wp_error( $said ) ) {
+				WP_CLI::error( $said->get_error_message() );
+			}
+			WP_CLI::line( $said );
 			return;
 		}
 		if ( ! empty( $assoc['delete-copy'] ) ) {
-			WP_CLI::line( SafeGrd_Restore::delete_copy() );
+			$said = SafeGrd_Restore::delete_copy();
+			if ( is_wp_error( $said ) ) {
+				WP_CLI::error( $said->get_error_message() );
+			}
+			WP_CLI::line( $said );
 			return;
 		}
 		if ( empty( $args[0] ) && ! SafeGrd_Restore::job() ) {
@@ -629,7 +637,10 @@ final class SafeGrd_CLI {
 	 * @when after_wp_load
 	 */
 	public function disconnect( $args, $assoc ) {
-		SafeGrd_Connect::disconnect();
+		$done = SafeGrd_Connect::disconnect();
+		if ( is_wp_error( $done ) ) {
+			WP_CLI::error( $done->get_error_message() );
+		}
 		WP_CLI::line( 'Disconnected. The backups already taken stay in SafeGrd, with this site\'s node.' );
 	}
 }

@@ -159,15 +159,30 @@ final class SafeGrd_Restore {
 		if ( ! SafeGrd_Settings::connected() ) {
 			return new WP_Error( 'safegrd_restore', 'Connect this site to SafeGrd first.' );
 		}
-		if ( self::job() ) {
-			return new WP_Error( 'safegrd_restore', 'A restore or a download is already under way on this site. Start this one when it finishes.' );
-		}
-		if ( is_array( get_option( SafeGrd_Backup::JOB, null ) ) ) {
-			return new WP_Error( 'safegrd_restore', 'A backup of this site is under way. Restore when it finishes.' );
-		}
 		if ( ! preg_match( '/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/', $snapshot_id ) ) {
 			return new WP_Error( 'safegrd_restore', 'That is not a snapshot id.' );
 		}
+		// Under the slice lock, so a backup slice cannot start between the
+		// check for a backup under way and the restore's job being written.
+		if ( ! SafeGrd_Backup::take_lock( 5 ) ) {
+			return new WP_Error( 'safegrd_restore', 'A backup or restore slice is running now. Try again in a minute.' );
+		}
+		try {
+			if ( self::job() ) {
+				return new WP_Error( 'safegrd_restore', 'A restore or a download is already under way on this site. Start this one when it finishes.' );
+			}
+			if ( is_array( get_option( SafeGrd_Backup::JOB, null ) ) ) {
+				return new WP_Error( 'safegrd_restore', 'A backup of this site is under way. Restore when it finishes.' );
+			}
+			self::write_job( $snapshot_id, $components, $mode, $items );
+		} finally {
+			SafeGrd_Backup::release_lock();
+		}
+		return true;
+	}
+
+	/** Writes the job begin() checked. */
+	private static function write_job( $snapshot_id, array $components, $mode, array $items ) {
 		$id = substr( bin2hex( random_bytes( 4 ) ), 0, 6 );
 		update_option(
 			self::JOB,
@@ -197,7 +212,6 @@ final class SafeGrd_Restore {
 			),
 			false
 		);
-		return true;
 	}
 
 	/**
@@ -794,9 +808,20 @@ final class SafeGrd_Restore {
 
 	private function db() {
 		if ( ! $this->db ) {
-			$this->db = SafeGrd_Dumper::connect();
+			$this->db = self::connect();
 		}
 		return $this->db;
+	}
+
+	/**
+	 * A connection of the restore's own, with foreign key checks off: the
+	 * copies it loads, drops and keeps aside reference each other, and a
+	 * DROP of a table another references is refused with them on.
+	 */
+	private static function connect() {
+		$db = SafeGrd_Dumper::connect();
+		$db->query( 'SET SESSION FOREIGN_KEY_CHECKS=0' );
+		return $db;
 	}
 
 	/** A small file of the snapshot, whole and checked. */
@@ -904,10 +929,59 @@ final class SafeGrd_Restore {
 		if ( false !== strpos( $sql, '@OLD_' ) ) {
 			return;
 		}
-		$from = $this->job['source_prefix'];
-		$tmp  = $this->job['tmp'];
-		$only = $this->job['tables_only'] ?? null;
-		$sql  = preg_replace_callback(
+		$restored = array();
+		foreach ( $this->job['manifest']['tables'] as $t ) {
+			$restored[] = substr( $t['table_name'], strlen( $this->job['source_prefix'] ) );
+		}
+		$sql = self::statement( $sql, $this->job['source_prefix'], $this->job['tmp'], $this->job['target_prefix'], $this->job['tables_only'] ?? null, $restored );
+		if ( null === $sql ) {
+			return;
+		}
+		if ( false === $this->db()->query( $sql ) ) {
+			throw new SafeGrd_Exception( esc_html( 'The database refused a statement of the dump: ' . $this->db()->error . ' (' . substr( $sql, 0, 120 ) . ')' ), 'other' );
+		}
+		/**
+		 * Fires after a statement of the dump ran, before its offset is saved.
+		 *
+		 * @param string $sql The statement, with its table renamed to the temporary prefix.
+		 */
+		do_action( 'safegrd_restore_statement', $sql );
+	}
+
+	/**
+	 * A statement of the dump as the restore runs it, or null for one with
+	 * nothing to run. Only what the plugin's dump writes is run: DROP TABLE
+	 * IF EXISTS, CREATE TABLE and INSERT INTO a table of the site, renamed to
+	 * the temporary prefix, and the header's SET comments. Anything else is
+	 * refused, so nothing in a dump reaches a live table before the swap.
+	 *
+	 * In CREATE TABLE, a foreign key's REFERENCES names the restore's own copy
+	 * of the table when the restore loads it, else the live table, and the
+	 * names of foreign keys and checks are dropped: MySQL wants each unique
+	 * in the database, and the live table beside the copy holds the same
+	 * ones. MySQL names them again from the table.
+	 *
+	 * @param string     $sql      The statement, without its ";\n".
+	 * @param string     $from     The backup's table prefix.
+	 * @param string     $tmp      The temporary prefix the dump loads under.
+	 * @param string     $live     This site's table prefix.
+	 * @param array|null $only     The tables chosen, by their name in the backup; null for all.
+	 * @param array      $restored The names after the prefix of the tables this restore loads.
+	 * @return string|null
+	 * @throws SafeGrd_Exception For a statement the restore does not run.
+	 */
+	public static function statement( $sql, $from, $tmp, $live, $only, array $restored ) {
+		$body = preg_replace( '/^(?:--[^\n]*\n|\s)*/', '', $sql );
+		if ( '' === trim( preg_replace( '/^--[^\n]*$/m', '', $body ) ) ) {
+			return null;
+		}
+		if ( preg_match( '#^/\*!\d+ SET [^`;]*\*/\s*$#', $body ) ) {
+			return $sql;
+		}
+		if ( ! preg_match( '/^(DROP TABLE IF EXISTS|CREATE TABLE|INSERT INTO) `(?:[^`]|``)+`/', $body, $m ) ) {
+			throw new SafeGrd_Exception( esc_html( 'The dump holds a statement the restore does not run: ' . substr( $body, 0, 80 ) . '. Nothing was changed.' ), 'other' );
+		}
+		$sql = preg_replace_callback(
 			'/^((?:--[^\n]*\n|\s)*)(DROP TABLE IF EXISTS|CREATE TABLE|INSERT INTO) `((?:[^`]|``)+)`/',
 			function ( $m ) use ( $from, $tmp, $only ) {
 				$name = str_replace( '``', '`', $m[3] );
@@ -922,15 +996,22 @@ final class SafeGrd_Restore {
 			$sql,
 			1
 		);
-		if ( false === $this->db()->query( $sql ) ) {
-			throw new SafeGrd_Exception( esc_html( 'The database refused a statement of the dump: ' . $this->db()->error . ' (' . substr( $sql, 0, 120 ) . ')' ), 'other' );
+		if ( 'CREATE TABLE' !== $m[1] ) {
+			return $sql;
 		}
-		/**
-		 * Fires after a statement of the dump ran, before its offset is saved.
-		 *
-		 * @param string $sql The statement, with its table renamed to the temporary prefix.
-		 */
-		do_action( 'safegrd_restore_statement', $sql );
+		$sql = preg_replace( '/\bCONSTRAINT `(?:[^`]|``)+` (FOREIGN KEY|CHECK)\b/', '$1', $sql );
+		return preg_replace_callback(
+			'/\bREFERENCES `((?:[^`]|``)+)`/',
+			function ( $m ) use ( $from, $tmp, $live, $restored ) {
+				$name = str_replace( '``', '`', $m[1] );
+				if ( 0 !== strpos( $name, $from ) ) {
+					return $m[0]; // not one of the site's tables: left as it is
+				}
+				$suffix = substr( $name, strlen( $from ) );
+				return 'REFERENCES `' . str_replace( '`', '``', ( in_array( $suffix, $restored, true ) ? $tmp : $live ) . $suffix ) . '`';
+			},
+			$sql
+		);
 	}
 
 	// --- tables -------------------------------------------------------------
@@ -1516,6 +1597,7 @@ final class SafeGrd_Restore {
 
 	/** What a swapped-in restore leaves: caches cleared, the record, the log. */
 	private function finish_swap( $tables, $aside ) {
+		self::protect_copy( SafeGrd_Site::content_dir() . '/' . $this->job['aside_dir'], (array) ( $this->job['placed'] ?? array() ) );
 		wp_cache_flush();
 		delete_option( 'rewrite_rules' );
 		// WP-Cron's schedule lives in the options table: only a restore that
@@ -1973,7 +2055,7 @@ final class SafeGrd_Restore {
 			return new WP_Error( 'safegrd_undo', 'A backup or restore slice is running now. Try again in a minute.' );
 		}
 		global $wpdb;
-		$db      = SafeGrd_Dumper::connect();
+		$db      = self::connect();
 		$live    = $wpdb->prefix;
 		$aside   = $last['aside'];
 		$swap    = 'sgu' . substr( bin2hex( random_bytes( 3 ) ), 0, 6 ) . '_';
@@ -2102,14 +2184,18 @@ final class SafeGrd_Restore {
 	/**
 	 * Deletes the copies kept by restores before the last one.
 	 *
-	 * @return string What was deleted, in words.
+	 * @return string|WP_Error What was deleted, in words.
 	 */
 	public static function delete_older_copies() {
 		$old = self::older_copies();
 		if ( $old['tables'] ) {
-			$db = SafeGrd_Dumper::connect();
-			$db->query( 'DROP TABLE IF EXISTS `' . implode( '`,`', $old['tables'] ) . '`' );
+			$db = self::connect();
+			$ok = $db->query( 'DROP TABLE IF EXISTS `' . implode( '`,`', $old['tables'] ) . '`' );
+			$err = $db->error;
 			$db->close();
+			if ( false === $ok ) {
+				return new WP_Error( 'safegrd_delete', 'Could not delete the tables kept by earlier restores: ' . $err );
+			}
 		}
 		$content = SafeGrd_Site::content_dir();
 		foreach ( $old['dirs'] as $d ) {
@@ -2121,27 +2207,45 @@ final class SafeGrd_Restore {
 	/**
 	 * Deletes the tables and files a finished restore kept aside.
 	 *
-	 * @return string What was deleted, in words.
+	 * @return string|WP_Error What was deleted, in words.
 	 */
 	public static function delete_copy() {
 		$last = get_option( self::LAST, array() );
 		if ( empty( $last['aside'] ) ) {
 			return 'There is no copy from before a restore to delete.';
 		}
-		$db = SafeGrd_Dumper::connect();
+		$db = self::connect();
 		$r  = $db->query( "SHOW TABLES LIKE '" . $db->real_escape_string( addcslashes( $last['aside'], '_%\\' ) ) . "%'" );
 		$drop = array();
 		while ( $r && ( $row = $r->fetch_row() ) ) {
 			$drop[] = '`' . $row[0] . '`';
 		}
-		if ( $drop ) {
-			$db->query( 'DROP TABLE IF EXISTS ' . implode( ',', $drop ) );
+		if ( $drop && false === $db->query( 'DROP TABLE IF EXISTS ' . implode( ',', $drop ) ) ) {
+			$err = $db->error;
+			$db->close();
+			return new WP_Error( 'safegrd_delete', 'Could not delete the tables kept from before the restore: ' . $err . '. Nothing was deleted.' );
 		}
 		$db->close();
 		self::rmdir( SafeGrd_Site::content_dir() . '/' . $last['aside_dir'] );
 		unset( $last['aside'], $last['aside_dir'] );
 		update_option( self::LAST, $last, false );
 		return sprintf( 'Deleted the copy from before the restore: %d tables and its files.', count( $drop ) );
+	}
+
+	/**
+	 * Keeps the web server from serving the copy a restore kept aside: it
+	 * holds the plugins and themes the site ran before, under the content
+	 * directory, and an old plugin's PHP files can still be requested there.
+	 * Apache and LiteSpeed read the .htaccess; Nginx does not, and the copy's
+	 * random name is then what keeps it unlisted. Not written when the
+	 * restore put a .htaccess of the content directory in place, as its copy
+	 * then sits there and Put the copy back moves it.
+	 */
+	private static function protect_copy( $dir, array $placed ) {
+		if ( ! is_dir( $dir ) || in_array( '.htaccess', $placed, true ) || file_exists( $dir . '/.htaccess' ) ) {
+			return;
+		}
+		self::fs()->put_contents( $dir . '/.htaccess', "Require all denied\nDeny from all\n", self::FILE_MODE );
 	}
 
 	/**

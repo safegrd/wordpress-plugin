@@ -293,14 +293,36 @@ final class SafeGrd_Connect {
 	/**
 	 * Forgets the connection on this site. The node and its backups stay in
 	 * the console.
+	 *
+	 * A backup or restore slice running now is waited for, up to 30 seconds:
+	 * dropping the cache tables under it would fail its run for no reason
+	 * the operator can see. A slice the host stopped leaves a lock that goes
+	 * stale, and is taken over.
+	 *
+	 * @return true|WP_Error
 	 */
 	public static function disconnect() {
-		SafeGrd_Scheduler::unschedule();
-		SafeGrd_Settings::forget();
-		delete_transient( self::SESSION );
-		delete_option( SafeGrd_Backup::JOB );
-		delete_option( SafeGrd_Backup::REPO );
-		delete_option( SafeGrd_Backup::LOCK );
-		SafeGrd_Repo_Cache::forget_all();
+		$took = false;
+		for ( $i = 0; $i < 30 && ! $took; $i++ ) {
+			if ( $i > 0 ) {
+				sleep( 1 );
+			}
+			$took = SafeGrd_Backup::take_lock( 5 );
+		}
+		if ( ! $took ) {
+			return new WP_Error( 'safegrd_busy', 'A backup or restore slice is running now. Disconnect when it finishes, in a minute or two.' );
+		}
+		try {
+			SafeGrd_Scheduler::unschedule();
+			SafeGrd_Settings::forget();
+			delete_transient( self::SESSION );
+			delete_option( SafeGrd_Backup::JOB );
+			delete_option( SafeGrd_Backup::REPO );
+			delete_option( SafeGrd_Backup::UNSENT );
+			SafeGrd_Repo_Cache::forget_all();
+		} finally {
+			SafeGrd_Backup::release_lock();
+		}
+		return true;
 	}
 }

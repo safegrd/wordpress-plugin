@@ -25,6 +25,13 @@ final class SafeGrd_Backup {
 	/** Set by Back up now: the next slice may start a backup. */
 	const REQUESTED  = 'safegrd_backup_requested';
 	const REPO       = 'safegrd_repo';
+	/**
+	 * Records of stored backups the server did not take because it could not
+	 * be reached or failed: sent again, oldest first, by the next slice.
+	 */
+	const UNSENT = 'safegrd_unsent';
+	/** Records kept waiting at most; past it the oldest is dropped, and said. */
+	const MAX_UNSENT = 50;
 	const SURFACE_ID = 'wordpress';
 	const READ_BYTES = 1048576;
 	/** A slice that fails on storage is tried this many times before the run fails. */
@@ -39,6 +46,8 @@ final class SafeGrd_Backup {
 	const DOING = 'safegrd_backup_doing';
 	/** A file at least this large is named in DOING while it is read. */
 	const LARGE_FILE = 16777216;
+	/** Paths left out that are listed one by one; the rest are counted. */
+	const MAX_SKIPPED = 500;
 
 	/**
 	 * Whether take_lock() took a lock left behind: a slice that ends, even by
@@ -47,6 +56,16 @@ final class SafeGrd_Backup {
 	 * @var bool
 	 */
 	public static $took_stale = false;
+
+	/**
+	 * What take_lock() wrote into the lock row, or null when this request
+	 * holds no lock. release_lock() deletes the row only while it still
+	 * holds this: a slice that ran past its stale time and was taken over
+	 * must not free the lock of the slice that took over.
+	 *
+	 * @var string|null
+	 */
+	private static $held = null;
 
 	/**
 	 * Directories under the content directory that are not the site:
@@ -171,6 +190,15 @@ final class SafeGrd_Backup {
 				'message' => 'A slice of this site\'s backup is running now.',
 			);
 		}
+		// Asked again under the lock: a restore begun since the first look
+		// would otherwise run beside a backup that dumps the site it replaces.
+		if ( SafeGrd_Restore::job() ) {
+			$this->unlock();
+			return array(
+				'status'  => 'busy',
+				'message' => 'A restore of this site is under way. Backups start again when it finishes.',
+			);
+		}
 		if ( function_exists( 'set_time_limit' ) ) {
 			@set_time_limit( 0.0 === $this->budget ? 0 : (int) ceil( $this->budget * 3 + 60 ) ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged, WordPress.PHP.NoSilencedErrors.Discouraged -- each slice sets its own limit; some hosts disable the function, and the slice budget still holds.
 		}
@@ -180,6 +208,7 @@ final class SafeGrd_Backup {
 		SafeGrd_Repo_Cache::install();
 		$this->client = SafeGrd_Client::for_site();
 		$this->repo   = new SafeGrd_Repo_Client( $this->client, SafeGrd_Settings::get( 'node_id' ) );
+		$this->resend_unsent();
 
 		$next = false;
 		try {
@@ -364,7 +393,7 @@ final class SafeGrd_Backup {
 			SafeGrd_Repo_Cache::forget_run( $this->job['epoch_id'], $this->job['run_id'] );
 			$this->job['db'] = ( new SafeGrd_Dumper( $this ) )->run();
 			foreach ( $this->job['db']['skipped'] as $s ) {
-				$this->job['skipped'][] = $s;
+				$this->skip( $s );
 			}
 			$rows = 0;
 			foreach ( $this->job['db']['tables'] as $t ) {
@@ -394,6 +423,19 @@ final class SafeGrd_Backup {
 
 	private function out_of_time() {
 		return $this->deadline > 0 && microtime( true ) >= $this->deadline;
+	}
+
+	/**
+	 * Notes a path the backup left out. The job is saved at every pack, so
+	 * past MAX_SKIPPED lines only a count is kept: a site with tens of
+	 * thousands of symlinks would otherwise rewrite megabytes each time.
+	 */
+	private function skip( $line ) {
+		if ( count( $this->job['skipped'] ) < self::MAX_SKIPPED ) {
+			$this->job['skipped'][] = $line;
+			return;
+		}
+		$this->job['skipped_more'] = (int) ( $this->job['skipped_more'] ?? 0 ) + 1;
 	}
 
 	// --- storing ----------------------------------------------------------
@@ -542,7 +584,7 @@ final class SafeGrd_Backup {
 			if ( '' !== SafeGrd_Site::relative( $uploads ) ) {
 				$roots[] = array( $uploads, 'files/' . SafeGrd_Site::uploads_path(), true );
 			} elseif ( null === $this->job['cursor'] ) {
-				$this->job['skipped'][] = $uploads . ' (the uploads directory is outside the site root)';
+				$this->skip( $uploads . ' (the uploads directory is outside the site root)' );
 			}
 		}
 		usort(
@@ -600,7 +642,7 @@ final class SafeGrd_Backup {
 		$names = @scandir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- an unreadable directory is listed as skipped.
 		if ( false === $names ) {
 			if ( null === $this->job['cursor'] || self::cmp_path( $rel, $this->job['cursor'] ) > 0 ) {
-				$this->job['skipped'][] = substr( $rel, 6 ) . '/ (could not be read)';
+				$this->skip( substr( $rel, 6 ) . '/ (could not be read)' );
 			}
 			return true;
 		}
@@ -625,7 +667,7 @@ final class SafeGrd_Backup {
 				continue;
 			}
 			if ( is_link( $full ) ) {
-				$this->job['skipped'][] = substr( $child, 6 ) . ' (a symlink)';
+				$this->skip( substr( $child, 6 ) . ' (a symlink)' );
 				continue;
 			}
 			if ( ! empty( $this->job['leave_out'] ) ) {
@@ -648,7 +690,7 @@ final class SafeGrd_Backup {
 				continue;
 			}
 			if ( ! is_file( $full ) ) {
-				$this->job['skipped'][] = substr( $child, 6 ) . ' (not a regular file)';
+				$this->skip( substr( $child, 6 ) . ' (not a regular file)' );
 				continue;
 			}
 			if ( $dir === $content_root && 'debug.log' === $name ) {
@@ -677,7 +719,7 @@ final class SafeGrd_Backup {
 		}
 		$stat = @stat( $full ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- an unreadable file is listed as skipped.
 		if ( false === $stat ) {
-			$this->job['skipped'][] = substr( $rel, 6 ) . ' (could not be read)';
+			$this->skip( substr( $rel, 6 ) . ' (could not be read)' );
 			$this->job['cursor']    = $rel;
 			return true;
 		}
@@ -705,7 +747,7 @@ final class SafeGrd_Backup {
 		} else {
 			$fh = @fopen( $full, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- a local file under wp-content, read 1 MB at a time: it can be larger than memory; an unreadable file is listed as skipped.
 			if ( false === $fh ) {
-				$this->job['skipped'][] = substr( $rel, 6 ) . ' (could not be read)';
+				$this->skip( substr( $rel, 6 ) . ' (could not be read)' );
 				$this->job['cursor']    = $rel;
 				return true;
 			}
@@ -719,7 +761,7 @@ final class SafeGrd_Backup {
 				if ( false === $buf || '' === $buf ) {
 					// Shorter than it was a moment ago: what was read is what
 					// is kept. Padding it would store a file that never was.
-					$this->job['skipped'][] = sprintf( '%s (changed while it was read: %d of %d bytes kept)', substr( $rel, 6 ), $size - $left, $size );
+					$this->skip( sprintf( '%s (changed while it was read: %d of %d bytes kept)', substr( $rel, 6 ), $size - $left, $size ) );
 					break;
 				}
 				$this->write( $buf );
@@ -767,6 +809,10 @@ final class SafeGrd_Backup {
 			$this->job['skipped'][] = sprintf( '%s (left out in settings: %d %s)', $pattern, $n, 1 === $n ? 'match' : 'matches' );
 		}
 		$this->job['excluded'] = array();
+		if ( ! empty( $this->job['skipped_more'] ) ) {
+			$this->job['skipped'][]    = sprintf( 'and %d more left out, not listed', $this->job['skipped_more'] );
+			$this->job['skipped_more'] = 0;
+		}
 		$this->save_job();
 		$job = $this->job;
 		$this->say( 'Writing the snapshot' );
@@ -994,8 +1040,13 @@ final class SafeGrd_Backup {
 		$rec     = $this->client->call( 'POST', '/api/v1/snapshots', $meta );
 		if ( is_wp_error( $rec ) ) {
 			// The backup is stored and restorable; the console just does not
-			// know about it. Said on every surface the run is shown.
+			// know about it, and so never test-restores it. Said on every
+			// surface the run is shown, and sent again when that may help.
 			$message = 'Stored, but the server did not record it: ' . $rec->get_error_message();
+			if ( self::worth_resending( $rec ) ) {
+				self::keep_unsent( $meta );
+				$message .= ' The record is sent again with the next backup.';
+			}
 			$this->say( 'Warning: ' . $message );
 		}
 		$this->heartbeat( $job['snapshot_id'], '' );
@@ -1143,6 +1194,67 @@ final class SafeGrd_Backup {
 		delete_option( self::DOING );
 		SafeGrd_Scheduler::continue_cancel();
 		return $this->record_failure( SafeGrd_Exception::text( $e ), $reason, $snapshot_id );
+	}
+
+	/**
+	 * Whether a record the server did not take may be taken later: the server
+	 * was unreachable, failed, or asked to slow down. A refusal stays one.
+	 */
+	private static function worth_resending( WP_Error $e ) {
+		$status = (int) ( $e->get_error_data()['status'] ?? 0 );
+		return 'safegrd_unreachable' === $e->get_error_code() || $status >= 500 || 429 === $status;
+	}
+
+	private static function keep_unsent( array $meta ) {
+		$all   = get_option( self::UNSENT, array() );
+		$all   = is_array( $all ) ? $all : array();
+		$all[] = $meta;
+		if ( count( $all ) > self::MAX_UNSENT ) {
+			$all = array_slice( $all, -self::MAX_UNSENT );
+		}
+		update_option( self::UNSENT, $all, false );
+	}
+
+	/**
+	 * Sends the records the server did not take, oldest first, and stops at
+	 * the first it still cannot take so their order holds. One it now
+	 * refuses is dropped with the reason: sending it again would be refused
+	 * again.
+	 */
+	private function resend_unsent() {
+		$all = get_option( self::UNSENT, array() );
+		if ( ! is_array( $all ) || ! $all ) {
+			return;
+		}
+		$sent = 0;
+		while ( $all ) {
+			$meta = $all[0];
+			$rec  = $this->client->call( 'POST', '/api/v1/snapshots', $meta, 20 );
+			if ( is_wp_error( $rec ) && self::worth_resending( $rec ) ) {
+				break;
+			}
+			array_shift( $all );
+			$id = (string) ( $meta['snapshot_id'] ?? '' );
+			if ( is_wp_error( $rec ) ) {
+				$this->say( sprintf( 'Error: the server refused the record of %s when it was sent again: %s', $id, $rec->get_error_message() ) );
+				continue;
+			}
+			$sent++;
+			// The last run's "did not record it" is no longer true.
+			$last = SafeGrd_Settings::last_run();
+			if ( ( $last['snapshot_id'] ?? '' ) === $id && 0 === strpos( (string) ( $last['message'] ?? '' ), 'Stored, but the server did not record it' ) ) {
+				$last['message'] = '';
+				SafeGrd_Settings::record_run( $last );
+			}
+		}
+		if ( $all ) {
+			update_option( self::UNSENT, $all, false );
+		} else {
+			delete_option( self::UNSENT );
+		}
+		if ( $sent > 0 ) {
+			$this->say( sprintf( 'Sent %d backup %s the server had not recorded.', $sent, 1 === $sent ? 'record' : 'records' ) );
+		}
 	}
 
 	/**
@@ -1348,6 +1460,7 @@ final class SafeGrd_Backup {
 			return false;
 		}
 		self::$took_stale = null !== $held;
+		self::$held       = $value;
 		// The slice reads the job the last slice saved, in whichever request
 		// that ran, not this request's cached copy.
 		wp_cache_delete( self::JOB, 'options' );
@@ -1359,7 +1472,11 @@ final class SafeGrd_Backup {
 
 	public static function release_lock() {
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE option_name = %s', $wpdb->options, self::LOCK ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the lock row, read only by take_lock.
+		if ( null === self::$held ) {
+			return;
+		}
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE option_name = %s AND option_value = %s', $wpdb->options, self::LOCK, self::$held ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the lock row, read only by take_lock.
+		self::$held = null;
 		wp_cache_delete( self::LOCK, 'options' );
 	}
 

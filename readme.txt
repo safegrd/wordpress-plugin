@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.9
+Stable tag: 0.1.10
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,17 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
+
+= 0.1.10 =
+* If another WordPress install shares your database and its table prefix starts with yours (wp_shop_ beside wp_), its tables are no longer in your backup, where restoring your site would have replaced them. The backup lists them as left out.
+* Restoring over your own site works when its tables have foreign keys, such as WooCommerce's download log. The restored tables reference each other, and MySQL names the keys again.
+* A restore runs only the statements the plugin's dump writes, and refuses a backup that names a file outside the site.
+* Triggers on your tables are listed as left out. The backup does not hold them.
+* A backup SafeGrd could not record, because it could not be reached, is recorded with the next backup.
+* A slice that runs past its time limit no longer frees the lock of the slice that took over, so two slices never run at once. A restore cannot begin while a backup slice starts, and Disconnect waits up to 30 seconds for a running slice.
+* The copy a restore keeps aside is not served by Apache or LiteSpeed.
+* A storage link that expires during a restore is signed again.
+* Delete the copy says so when the database refuses, instead of reporting it deleted.
 
 = 0.1.9 =
 * Back up before a plugin, theme or core update: a setting, off until you turn it on, under Tools, SafeGrd, Settings, or wp safegrd schedule --before-updates=on. The update waits up to 20 seconds for the backup in wp-admin and for the whole backup from WP-CLI, and goes ahead if the backup fails. Recent backups, the restore list and wp safegrd snapshots label such a backup "Before update: <plugin> <old> to <new>".

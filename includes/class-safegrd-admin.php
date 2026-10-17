@@ -1025,9 +1025,13 @@ final class SafeGrd_Admin {
 
 	public static function ajax_restore_delete_copy() {
 		self::guard();
+		$said = SafeGrd_Restore::delete_copy();
+		if ( is_wp_error( $said ) ) {
+			wp_send_json_error( array( 'message' => $said->get_error_message() ) );
+		}
 		wp_send_json_success(
 			array(
-				'message' => SafeGrd_Restore::delete_copy(),
+				'message' => $said,
 				'restore' => self::describe_restore(),
 			)
 		);
@@ -1036,9 +1040,13 @@ final class SafeGrd_Admin {
 	/** Deletes the copies kept by restores before the last one. */
 	public static function ajax_restore_delete_older() {
 		self::guard();
+		$said = SafeGrd_Restore::delete_older_copies();
+		if ( is_wp_error( $said ) ) {
+			wp_send_json_error( array( 'message' => $said->get_error_message() ) );
+		}
 		wp_send_json_success(
 			array(
-				'message' => SafeGrd_Restore::delete_older_copies(),
+				'message' => $said,
 				'restore' => self::describe_restore(),
 			)
 		);
@@ -1061,7 +1069,10 @@ final class SafeGrd_Admin {
 
 	public static function ajax_disconnect() {
 		self::guard();
-		SafeGrd_Connect::disconnect();
+		$done = SafeGrd_Connect::disconnect();
+		if ( is_wp_error( $done ) ) {
+			wp_send_json_error( array( 'message' => $done->get_error_message() ) );
+		}
 		wp_send_json_success( array( 'message' => 'Disconnected.' ) );
 	}
 }

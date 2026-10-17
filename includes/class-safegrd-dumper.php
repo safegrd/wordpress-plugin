@@ -160,6 +160,66 @@ final class SafeGrd_Dumper {
 		}
 		$res->free();
 		sort( $out, SORT_STRING );
+		// Another install whose prefix starts with this site's (wp_shop_ beside
+		// wp_) matches the LIKE above. Its tables are not this site's, and a
+		// restore of this site would replace them.
+		$others = self::other_installs( $out, $this->prefix );
+		if ( $others ) {
+			$mine = array();
+			$left = array_fill_keys( $others, 0 );
+			foreach ( $out as $name ) {
+				$owner = '';
+				foreach ( $others as $p ) {
+					if ( 0 === strpos( $name, $p ) && strlen( $p ) > strlen( $owner ) ) {
+						$owner = $p;
+					}
+				}
+				if ( '' === $owner ) {
+					$mine[] = $name;
+				} else {
+					$left[ $owner ]++;
+				}
+			}
+			foreach ( $left as $p => $n ) {
+				$this->skipped[] = sprintf( '%s* (%d tables of another WordPress install in this database)', $p, $n );
+			}
+			$out = $mine;
+		}
+		$res = $this->db->query( "SHOW TRIGGERS LIKE '" . $like . "'" );
+		if ( $res instanceof mysqli_result ) {
+			$tables = array_flip( $out );
+			while ( $row = $res->fetch_assoc() ) {
+				if ( isset( $tables[ $row['Table'] ] ) ) {
+					$this->skipped[] = sprintf( 'trigger %s on %s (triggers are not backed up)', $row['Trigger'], $row['Table'] );
+				}
+			}
+			$res->free();
+		}
+		return $out;
+	}
+
+	/**
+	 * The table prefixes of other WordPress installs in this database whose
+	 * prefix starts with $prefix: each has its own options, posts, users and
+	 * usermeta tables. A plugin's table that happens to end in "options" has
+	 * no users table beside it.
+	 *
+	 * @param array  $names  Base tables whose name starts with $prefix.
+	 * @param string $prefix This site's table prefix.
+	 * @return array
+	 */
+	public static function other_installs( array $names, $prefix ) {
+		$have = array_flip( $names );
+		$out  = array();
+		foreach ( $names as $name ) {
+			if ( 'options' !== substr( $name, -7 ) ) {
+				continue;
+			}
+			$p = substr( $name, 0, -7 );
+			if ( $p !== $prefix && 0 === strpos( $p, $prefix ) && isset( $have[ $p . 'posts' ], $have[ $p . 'users' ], $have[ $p . 'usermeta' ] ) ) {
+				$out[] = $p;
+			}
+		}
 		return $out;
 	}
 

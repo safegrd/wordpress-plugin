@@ -27,8 +27,10 @@ $wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegr
 $wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegrd_restore_files' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
 $wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->prefix . 'safegrd_restore_index' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
 delete_transient( 'safegrd_connect_session' );
+delete_transient( 'safegrd_loopback' );
+delete_option( 'safegrd_unsent' );
 // What each backup held, as read for the restore picker.
-$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE option_name LIKE %s OR option_name LIKE %s', $wpdb->options, $wpdb->esc_like( '_transient_safegrd_contents_' ) . '%', $wpdb->esc_like( '_transient_timeout_safegrd_contents_' ) . '%' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own transients, one per backup looked at.
+$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE option_name LIKE %s OR option_name LIKE %s', $wpdb->options, $wpdb->esc_like( '_transient_safegrd_contents' ) . '%', $wpdb->esc_like( '_transient_timeout_safegrd_contents' ) . '%' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own transients, one per backup looked at.
 wp_clear_scheduled_hook( 'safegrd_scheduled_backup' );
 wp_clear_scheduled_hook( 'safegrd_backup_now' );
 wp_unschedule_hook( 'safegrd_continue' );
