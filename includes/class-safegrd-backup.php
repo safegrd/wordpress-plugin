@@ -208,7 +208,6 @@ final class SafeGrd_Backup {
 		SafeGrd_Repo_Cache::install();
 		$this->client = SafeGrd_Client::for_site();
 		$this->repo   = new SafeGrd_Repo_Client( $this->client, SafeGrd_Settings::get( 'node_id' ) );
-		$this->resend_unsent();
 
 		$next = false;
 		try {
@@ -262,6 +261,9 @@ final class SafeGrd_Backup {
 	 */
 	private function start() {
 		delete_option( self::REQUESTED );
+		// Once a run, not every slice: a server that is slow to answer
+		// would spend a short slice's time before any file is read.
+		$this->resend_unsent();
 		$node_id = SafeGrd_Settings::get( 'node_id' );
 		$info    = $this->client->call( 'GET', '/api/v1/nodes/' . rawurlencode( $node_id ) . '/hosted' );
 		if ( is_wp_error( $info ) ) {
