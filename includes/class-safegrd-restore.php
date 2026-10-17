@@ -933,6 +933,11 @@ final class SafeGrd_Restore {
 		foreach ( $this->job['manifest']['tables'] as $t ) {
 			$restored[] = substr( $t['table_name'], strlen( $this->job['source_prefix'] ) );
 		}
+		$fks = self::foreign_keys( $sql, $this->job['source_prefix'], $this->job['target_prefix'] );
+		if ( null !== $fks ) {
+			// The names statement() drops, to put back once the swap is done.
+			$this->job['fks'][ $fks[0] ] = $fks[1];
+		}
 		$sql = self::statement( $sql, $this->job['source_prefix'], $this->job['tmp'], $this->job['target_prefix'], $this->job['tables_only'] ?? null, $restored );
 		if ( null === $sql ) {
 			return;
@@ -959,7 +964,8 @@ final class SafeGrd_Restore {
 	 * of the table when the restore loads it, else the live table, and the
 	 * names of foreign keys and checks are dropped: MySQL wants each unique
 	 * in the database, and the live table beside the copy holds the same
-	 * ones. MySQL names them again from the table.
+	 * ones. MySQL names them after the table, and name_foreign_keys() puts
+	 * the foreign keys' names back once the swap is done.
 	 *
 	 * @param string     $sql      The statement, without its ";\n".
 	 * @param string     $from     The backup's table prefix.
@@ -1012,6 +1018,117 @@ final class SafeGrd_Restore {
 			},
 			$sql
 		);
+	}
+
+	/**
+	 * The foreign keys a CREATE TABLE of the dump names, as the live site
+	 * will hold them: [the table's name after the prefix, [{name, columns,
+	 * references, ref_columns, options}]], or null for any other statement
+	 * or a table with none. A name and a referenced table that carry the
+	 * backup's prefix carry this site's (fk_wp_x to fk_wpx_x), as the plugin
+	 * that made them would name them here.
+	 *
+	 * @param string $sql  The statement, as the dump holds it.
+	 * @param string $from The backup's table prefix.
+	 * @param string $live This site's table prefix.
+	 * @return array|null
+	 */
+	public static function foreign_keys( $sql, $from, $live ) {
+		$body = preg_replace( '/^(?:--[^\n]*\n|\s)*/', '', $sql );
+		if ( ! preg_match( '/^CREATE TABLE `((?:[^`]|``)+)`/', $body, $t ) ) {
+			return null;
+		}
+		$table = str_replace( '``', '`', $t[1] );
+		if ( '' === $from || 0 !== strpos( $table, $from ) ) {
+			return null;
+		}
+		if ( ! preg_match_all( '/\bCONSTRAINT `((?:[^`]|``)+)` FOREIGN KEY \(([^)]*)\) REFERENCES `((?:[^`]|``)+)` \(([^)]*)\)([^,\n]*)/', $body, $m, PREG_SET_ORDER ) ) {
+			return null;
+		}
+		$swap = function ( $name ) use ( $from, $live ) {
+			$at = strpos( $name, $from );
+			return false === $at ? $name : substr_replace( $name, $live, $at, strlen( $from ) );
+		};
+		$out = array();
+		foreach ( $m as $fk ) {
+			$ref   = str_replace( '``', '`', $fk[3] );
+			$out[] = array(
+				'name'        => $swap( str_replace( '``', '`', $fk[1] ) ),
+				'columns'     => $fk[2],
+				'references'  => 0 === strpos( $ref, $from ) ? $live . substr( $ref, strlen( $from ) ) : $ref,
+				'ref_columns' => $fk[4],
+				'options'     => trim( $fk[5] ),
+			);
+		}
+		return array( substr( $table, strlen( $from ) ), $out );
+	}
+
+	/**
+	 * Puts back the names statement() dropped from the foreign keys of the
+	 * restored tables: each key MySQL named after its table is added again
+	 * under its name, then the unnamed one dropped, so the table is never
+	 * without it. A name another table holds, as the copy kept aside from
+	 * before a restore over the same site does, waits: Delete the copy
+	 * frees it and names the key then.
+	 *
+	 * @param mysqli $db   A connection with foreign key checks off.
+	 * @param string $live This site's table prefix.
+	 * @param array  $fks  Table name after the prefix => keys, from foreign_keys().
+	 * @return array The keys still waiting for their name, in the same shape.
+	 */
+	public static function name_foreign_keys( $db, $live, array $fks ) {
+		$waiting = array();
+		$bare    = function ( $cols ) {
+			return str_replace( array( '`', ' ' ), '', $cols );
+		};
+		foreach ( $fks as $suffix => $keys ) {
+			$table = $live . $suffix;
+			$have  = array();
+			$stmt  = $db->prepare( "SELECT CONSTRAINT_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY ORDINAL_POSITION SEPARATOR ','), REFERENCED_TABLE_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL GROUP BY CONSTRAINT_NAME, REFERENCED_TABLE_NAME" );
+			if ( ! $stmt ) {
+				continue;
+			}
+			$stmt->bind_param( 's', $table );
+			$stmt->execute();
+			// bind_result, not get_result: that one needs mysqlnd.
+			$stmt->bind_result( $c_name, $c_cols, $c_ref );
+			while ( $stmt->fetch() ) {
+				$have[] = array( $c_name, $c_cols, $c_ref );
+			}
+			$stmt->close();
+			foreach ( (array) $keys as $k ) {
+				$current = null;
+				foreach ( $have as $h ) {
+					if ( $h[1] === $bare( $k['columns'] ) && $h[2] === $k['references'] ) {
+						$current = $h[0];
+						if ( $h[0] === $k['name'] ) {
+							break;
+						}
+					}
+				}
+				if ( null === $current || $current === $k['name'] ) {
+					continue; // gone, or named already
+				}
+				$taken = $db->prepare( "SELECT 1 FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = ? AND CONSTRAINT_TYPE = 'FOREIGN KEY'" );
+				$taken->bind_param( 's', $k['name'] );
+				$taken->execute();
+				$taken->store_result();
+				$held = $taken->num_rows > 0;
+				$taken->close();
+				if ( $held ) {
+					$waiting[ $suffix ][] = $k;
+					continue;
+				}
+				$q   = function ( $n ) {
+					return '`' . str_replace( '`', '``', $n ) . '`';
+				};
+				$add = 'ALTER TABLE ' . $q( $table ) . ' ADD CONSTRAINT ' . $q( $k['name'] ) . ' FOREIGN KEY (' . $k['columns'] . ') REFERENCES ' . $q( $k['references'] ) . ' (' . $k['ref_columns'] . ')' . ( '' !== $k['options'] ? ' ' . $k['options'] : '' );
+				if ( false !== $db->query( $add ) ) {
+					$db->query( 'ALTER TABLE ' . $q( $table ) . ' DROP FOREIGN KEY ' . $q( $current ) );
+				}
+			}
+		}
+		return $waiting;
 	}
 
 	// --- tables -------------------------------------------------------------
@@ -1151,19 +1268,36 @@ final class SafeGrd_Restore {
 			$where = implode( ' OR ', array_map( function ( $c ) use ( $like ) {
 				return '`' . $c . '` LIKE ' . $like;
 			}, $cols ) );
+			// The batch a stopped slice was replacing, as its rows were before:
+			// key => hash of their values. On a table without transactions
+			// (MyISAM) some of its rows may be replaced already, and the saved
+			// place is before the batch, so the batch is read again. A row
+			// whose values no longer hash to what they were is one of those,
+			// and is skipped: replaced twice, a new address that holds the old
+			// one (a.com to a.com/blog) would come out as a.com/blog/blog.
+			$before = ( $this->job['batch_table'] ?? -1 ) === $this->job['table'] ? (array) ( $this->job['batch'] ?? array() ) : array();
 			while ( true ) {
 				$after = null === $this->job['pk'] ? '' : " AND `$key` > '" . $db->real_escape_string( (string) $this->job['pk'] ) . "'";
 				$res   = $db->query( 'SELECT `' . $key . '`,`' . implode( '`,`', $cols ) . '` FROM `' . $name . "` WHERE ($where)$after ORDER BY `$key` LIMIT " . self::URL_BATCH );
 				if ( ! $res ) {
 					throw new SafeGrd_Exception( esc_html( 'Could not read ' . $suffix . ' to replace the site URL: ' . $db->error ), 'other' );
 				}
-				$n = 0;
-				// A batch and its saved place go together, near enough: a
-				// slice stopped between them would replace the batch again,
-				// which a new address containing the old one would not survive.
-				$db->query( 'START TRANSACTION' );
+				$n       = 0;
+				$last    = null;
+				$updates = array();
+				$hashes  = array();
 				while ( $row = $res->fetch_assoc() ) {
 					$n++;
+					$last = $row[ $key ];
+					$vals = array();
+					foreach ( $cols as $c ) {
+						$vals[] = $row[ $c ];
+					}
+					$hash = self::row_hash( $vals );
+					$id   = (string) $row[ $key ];
+					if ( isset( $before[ $id ] ) && $before[ $id ] !== $hash ) {
+						continue; // replaced by the slice that stopped
+					}
 					$set = array();
 					foreach ( $cols as $c ) {
 						if ( null === $row[ $c ] ) {
@@ -1174,12 +1308,38 @@ final class SafeGrd_Restore {
 							$set[] = '`' . $c . "` = '" . $db->real_escape_string( $new ) . "'";
 						}
 					}
-					if ( $set && false === $db->query( 'UPDATE `' . $name . '` SET ' . implode( ',', $set ) . " WHERE `$key` = '" . $db->real_escape_string( (string) $row[ $key ] ) . "'" ) ) {
-						throw new SafeGrd_Exception( esc_html( 'Could not replace the site URL in ' . $suffix . ': ' . $db->error ), 'other' );
+					if ( $set ) {
+						$updates[ $id ] = $set;
+						$hashes[ $id ]  = $hash;
 					}
-					$this->job['pk'] = $row[ $key ];
 				}
-				$db->query( 'COMMIT' );
+				$res->free();
+				if ( $updates ) {
+					// Written down before the first row changes.
+					$this->job['batch_table'] = $this->job['table'];
+					$this->job['batch']       = $hashes;
+					$this->save();
+					$db->query( 'START TRANSACTION' );
+					foreach ( $updates as $id => $set ) {
+						if ( false === $db->query( 'UPDATE `' . $name . '` SET ' . implode( ',', $set ) . " WHERE `$key` = '" . $db->real_escape_string( (string) $id ) . "'" ) ) {
+							throw new SafeGrd_Exception( esc_html( 'Could not replace the site URL in ' . $suffix . ': ' . $db->error ), 'other' );
+						}
+						/**
+						 * Fires after one row's site URL is replaced, before the
+						 * batch's place is saved.
+						 *
+						 * @param string $name The table, under the temporary prefix.
+						 * @param string $id   The row's primary key.
+						 */
+						do_action( 'safegrd_restore_replaced', $name, $id );
+					}
+					$db->query( 'COMMIT' );
+				}
+				if ( null !== $last ) {
+					$this->job['pk'] = $last;
+				}
+				$this->job['batch'] = array();
+				$before             = array();
 				$this->save();
 				if ( $n < self::URL_BATCH ) {
 					break;
@@ -1190,6 +1350,11 @@ final class SafeGrd_Restore {
 			}
 		}
 		return true;
+	}
+
+	/** A row's values, hashed, to tell whether a stopped slice replaced it. */
+	private static function row_hash( array $vals ) {
+		return hash( 'sha256', serialize( $vals ) );
 	}
 
 	/**
@@ -1631,6 +1796,14 @@ final class SafeGrd_Restore {
 			'notes'       => $this->job['notes'],
 			'wordpress'   => $this->job['source_wp'],
 		);
+		if ( $tables && ! empty( $this->job['fks'] ) ) {
+			$fks = array_intersect_key( (array) $this->job['fks'], array_flip( (array) $last['tables_in'] ) );
+			$fks = self::name_foreign_keys( $this->db(), $this->job['target_prefix'], $fks );
+			if ( $fks ) {
+				$last['fk_names'] = $fks;
+				$last['notes'][]  = 'The restored foreign keys are named after their tables until Delete the copy frees their own names, which the copy kept aside holds.';
+			}
+		}
 		delete_option( self::JOB );
 		delete_option( self::FAILED );
 		update_option( self::LAST, $last, false );
@@ -2201,7 +2374,28 @@ final class SafeGrd_Restore {
 		foreach ( $old['dirs'] as $d ) {
 			self::rmdir( $content . '/' . $d );
 		}
+		self::name_waiting_keys();
 		return sprintf( 'Deleted the copies kept by earlier restores: %d tables and %d directories, %s.', count( $old['tables'] ), count( $old['dirs'] ), size_format( $old['bytes'], 1 ) );
+	}
+
+	/**
+	 * Names the restored foreign keys whose names a deleted copy held.
+	 */
+	private static function name_waiting_keys() {
+		$last = get_option( self::LAST, array() );
+		if ( empty( $last['fk_names'] ) ) {
+			return;
+		}
+		global $wpdb;
+		$db   = self::connect();
+		$left = self::name_foreign_keys( $db, $wpdb->prefix, (array) $last['fk_names'] );
+		$db->close();
+		if ( $left ) {
+			$last['fk_names'] = $left;
+		} else {
+			unset( $last['fk_names'] );
+		}
+		update_option( self::LAST, $last, false );
 	}
 
 	/**
@@ -2229,6 +2423,7 @@ final class SafeGrd_Restore {
 		self::rmdir( SafeGrd_Site::content_dir() . '/' . $last['aside_dir'] );
 		unset( $last['aside'], $last['aside_dir'] );
 		update_option( self::LAST, $last, false );
+		self::name_waiting_keys();
 		return sprintf( 'Deleted the copy from before the restore: %d tables and its files.', count( $drop ) );
 	}
 

@@ -151,7 +151,8 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 
 = 0.1.10 =
 * If another WordPress install shares your database and its table prefix starts with yours (wp_shop_ beside wp_), its tables are no longer in your backup, where restoring your site would have replaced them. The backup lists them as left out.
-* Restoring over your own site works when its tables have foreign keys, such as WooCommerce's download log. The restored tables reference each other, and MySQL names the keys again.
+* Restoring over your own site works when its tables have foreign keys, such as WooCommerce's download log. The restored tables reference each other, and each key keeps its name. Over your own site the name returns when you delete the copy kept from before the restore, which holds it until then.
+* Replacing the site address after a restore to a new address is safe to resume on MyISAM tables. A slice the host stopped part way through a batch replaced some rows twice when the new address held the old one (a.com to a.com/blog).
 * A restore runs only the statements the plugin's dump writes, and refuses a backup that names a file outside the site.
 * Triggers on your tables are listed as left out. The backup does not hold them.
 * A backup SafeGrd could not record, because it could not be reached, is recorded with the next backup.

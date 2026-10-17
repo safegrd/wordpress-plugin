@@ -61,17 +61,6 @@ paid for until its lock expires. Its size is at most one pack, 8 MiB.
 Fix: the server could list the epoch's unconfirmed keys when it opens the epoch, and the
 plugin could adopt the ones it wrote, the way it adopts uncommitted packs today.
 
-## Search and replace is only atomic on InnoDB
-
-`replace_url()` commits each batch of rows and saves its place right after, so a slice
-stopped between the two runs the batch again. The transaction does nothing on MyISAM
-tables: a slice stopped in the middle of a batch there replaces some rows twice. That only
-corrupts rows when the new address contains the old one (`http://a.com` to
-`http://a.com/blog`).
-
-Fix: skip a row whose value already holds the new address and not the old one, or keep the
-batch's primary keys in the job before updating them.
-
 ## Ctrl-C counts as the host stopping a slice
 
 A slice that ends releases its lock, so a lock left behind is read as a slice the host
@@ -90,15 +79,3 @@ it was.
 
 Fix: name the file being read in `safegrd_backup_doing` for every file that takes more than a
 second to read, not only by size.
-
-## A restored foreign key loses its name
-
-`SafeGrd_Restore::statement()` drops the names of foreign keys and checks from each
-`CREATE TABLE`, because MySQL wants every name unique in the database and the live table
-beside the restore's copy holds the same ones. MySQL then names them after the table
-(`<table>_ibfk_1`). A plugin that looks for its constraint by name adds it
-again: WooCommerce does, on its next database update, and the table then has two
-identical foreign keys. Nothing breaks.
-
-Fix: after the swap, rename each one back with `ALTER TABLE ... DROP FOREIGN KEY ...,
-ADD CONSTRAINT <name> ...`, from the names the dump held, with the live prefix.
