@@ -11,9 +11,11 @@ includes by default.
 
 ## Install
 
-1. Download `safegrd-backup.zip` from [Releases](https://github.com/safegrd/wordpress-plugin/releases),
-   or build it with `bin/build-zip.sh`.
-2. In wp-admin: Plugins, Add New, Upload Plugin, then Activate.
+1. In wp-admin: Plugins, Add New, search for SafeGrd Backup, Install Now, then Activate. It is
+   [safegrd-backup](https://wordpress.org/plugins/safegrd-backup/) in the WordPress.org plugin
+   directory, which also delivers updates. The same zip is on
+   [Releases](https://github.com/safegrd/wordpress-plugin/releases) for a site that cannot reach
+   WordPress.org, or build it with `bin/build-zip.sh`.
 3. Tools, SafeGrd: choose who keeps the key and press **Connect**. Sign in or create an account
    in the tab that opens, and type the code wp-admin shows.
 
@@ -22,7 +24,7 @@ The first backup starts right after connecting, then runs once a day.
 From WP-CLI:
 
 ```sh
-wp plugin install safegrd-backup.zip --activate
+wp plugin install safegrd-backup --activate
 wp safegrd connect                       # prints a URL and a code to approve on any device
 wp safegrd connect --token=env:SAFEGRD_TOKEN   # or a personal access token from the console
 wp safegrd backup
@@ -189,6 +191,13 @@ through the swap can be put back.
 `.wordpress-org/` holds the wordpress.org listing: the banner (`banner.svg` is the source,
 rendered with `rsvg-convert`), the icon (SafeGrd's brand mark) and the screenshots, numbered as the `== Screenshots ==` lines in
 `readme.txt`. They are not in the zip: they go to the SVN `assets/` directory beside `trunk`.
+
+A release goes to GitHub first (`gh release create v<version> dist/safegrd-backup.zip`), then to
+the WordPress.org directory with `bin/release-wporg.sh`, which commits the zip's files to
+`trunk`, the listing's images to `assets/`, and tags the version; `--dry-run` shows the
+changes and commits nothing. The directory serves the version `Stable tag` names, so the
+`Version` header, `SAFEGRD_VERSION`, `Stable tag` and the changelog all carry the new number
+before a release. The SVN username is `safegrd`; the password is set on profiles.wordpress.org.
 
 `git config core.hooksPath .githooks` once per clone. The end-to-end test lives with the server's
 test suite and runs this plugin on the official WordPress image against a real server.

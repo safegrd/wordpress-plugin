@@ -65,7 +65,7 @@ This plugin sends backups to SafeGrd (https://safegrd.dev), a backup service. No
 
 == Installation ==
 
-1. Upload the zip under Plugins, Add New, Upload Plugin, and activate it.
+1. In wp-admin, open Plugins, Add New, search for SafeGrd Backup, press Install Now, then Activate.
 2. Open Tools, SafeGrd, choose who keeps the key, and press Connect.
 3. Sign in or create an account in the tab that opens, and type the code wp-admin shows.
 
