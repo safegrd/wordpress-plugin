@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.10
+Stable tag: 0.1.11
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,9 @@ One site, with scheduled backups and test restores. https://safegrd.dev/pricing 
 5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
+
+= 0.1.11 =
+* A sign-in started with wp safegrd connect that expires says to run wp safegrd connect again, not to press Connect.
 
 = 0.1.10 =
 * If another WordPress install shares your database and its table prefix starts with yours (wp_shop_ beside wp_), its tables are no longer in your backup, where restoring your site would have replaced them. The backup lists them as left out.

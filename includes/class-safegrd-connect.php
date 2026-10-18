@@ -71,6 +71,16 @@ final class SafeGrd_Connect {
 	}
 
 	/**
+	 * What to do about a sign-in that cannot finish, in the words of where it
+	 * was started: wp-admin's Connect button, or wp safegrd connect.
+	 *
+	 * @return string
+	 */
+	private static function again() {
+		return ( defined( 'WP_CLI' ) && WP_CLI ) ? 'Run wp safegrd connect again.' : 'Press Connect again.';
+	}
+
+	/**
 	 * Asks whether the sign-in was approved, and once it was, registers the
 	 * site.
 	 *
@@ -79,7 +89,7 @@ final class SafeGrd_Connect {
 	public static function poll() {
 		$session = get_transient( self::SESSION );
 		if ( ! is_array( $session ) ) {
-			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. Press Connect again.' );
+			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. ' . self::again() );
 		}
 		if ( isset( $session['pat'] ) ) {
 			return array(
@@ -101,13 +111,13 @@ final class SafeGrd_Connect {
 			$data = $s->get_error_data();
 			if ( is_array( $data ) && isset( $data['status'] ) && 404 === $data['status'] ) {
 				delete_transient( self::SESSION );
-				return new WP_Error( 'safegrd_expired', 'The server no longer knows this sign-in. Press Connect again.' );
+				return new WP_Error( 'safegrd_expired', 'The server no longer knows this sign-in. ' . self::again() );
 			}
 			return $s;
 		}
 		if ( isset( $s['status'] ) && 'expired' === $s['status'] ) {
 			delete_transient( self::SESSION );
-			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. Press Connect again.' );
+			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. ' . self::again() );
 		}
 		if ( empty( $s['token'] ) || ( isset( $s['status'] ) && 'authorized' !== $s['status'] ) ) {
 			return array(
@@ -148,7 +158,7 @@ final class SafeGrd_Connect {
 	public static function pick_org( $org_id ) {
 		$session = get_transient( self::SESSION );
 		if ( ! is_array( $session ) || ! isset( $session['pat'] ) ) {
-			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. Press Connect again.' );
+			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. ' . self::again() );
 		}
 		if ( ! in_array( $org_id, wp_list_pluck( $session['orgs'], 'id' ), true ) ) {
 			return new WP_Error( 'safegrd_org', 'Pick one of the organizations listed.' );
