@@ -87,7 +87,8 @@ svn add -q --force "$wc/trunk" "$wc/assets"
 svn status "$wc" | awk '$1 == "!" {print $2}' | while read -r gone; do svn rm -q "$gone"; done
 # Without a type the assets are served as text and the listing shows no image.
 for f in "$wc"/assets/*.png; do svn propset -q svn:mime-type image/png "$f"; done
-svn propset -q --force svn:mime-type image/svg+xml "$wc/assets/icon.svg"
+# svn warns that an SVG is text under a binary type; the directory wants the type.
+svn propset -q --force svn:mime-type image/svg+xml "$wc/assets/icon.svg" 2>/dev/null
 
 echo "Changes against $url:"
 svn status "$wc" | sed 's/^/  /'
