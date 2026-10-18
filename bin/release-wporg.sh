@@ -21,7 +21,7 @@
 set -eu
 
 url=https://plugins.svn.wordpress.org/safegrd-backup
-wc=${WPORG_SVN_DIR:-dist/wporg}
+wc=${WPORG_SVN_DIR:-.wporg}
 dry=0
 [ "${1:-}" = "--dry-run" ] && dry=1
 
