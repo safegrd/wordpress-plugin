@@ -80,13 +80,14 @@ for f in banner-772x250.png banner-1544x500.png icon-128x128.png icon-256x256.pn
 done
 # Screenshots are numbered as the == Screenshots == lines in readme.txt; a
 # number no longer listed goes away.
-rm -f "$wc"/assets/screenshot-*.png
-cp .wordpress-org/screenshot-*.png "$wc/assets/"
+rm -f "$wc"/assets/screenshot-*.png "$wc"/assets/screenshot-*.gif
+cp .wordpress-org/screenshot-*.png .wordpress-org/screenshot-*.gif "$wc/assets/"
 
 svn add -q --force "$wc/trunk" "$wc/assets"
 svn status "$wc" | awk '$1 == "!" {print $2}' | while read -r gone; do svn rm -q "$gone"; done
 # Without a type the assets are served as text and the listing shows no image.
 for f in "$wc"/assets/*.png; do svn propset -q svn:mime-type image/png "$f"; done
+for f in "$wc"/assets/*.gif; do svn propset -q svn:mime-type image/gif "$f"; done
 # svn warns that an SVG is text under a binary type; the directory wants the type.
 svn propset -q --force svn:mime-type image/svg+xml "$wc/assets/icon.svg" 2>/dev/null
 

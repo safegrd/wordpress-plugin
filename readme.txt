@@ -103,11 +103,12 @@ On Tools > SafeGrd, Restore & download, open a backup from before the update, ch
 
 == Screenshots ==
 
-1. Tools > SafeGrd once connected: whether the site is protected, the last backup with its tables, rows, files and lock date, the next backup, the last test restore, storage used against the plan, and the recent backups, each with Open and its log.
-2. Restore & download: a backup opened, with each part's size and the WordPress and PHP versions. Some plugins only lists each plugin with the version in the backup beside the one installed, and the review says what will be replaced before anything starts.
-3. The Updates screen: how old the last backup is, with Back up now, and where to restore a plugin or theme if an update breaks the site.
-4. Connecting: choose how your key is managed, then press Connect, or connect with a personal access token instead.
-5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
+1. From install to restore: install the plugin, connect and approve the sign-in, the first backup, then restore the database from it.
+2. Tools > SafeGrd once connected: whether the site is protected, the last backup with its tables, rows, files and lock date, the next backup, the last test restore, storage used against the plan, and the recent backups, each with Open and its log.
+3. Restore & download: a backup opened, with each part's size and the WordPress and PHP versions. Some plugins only lists each plugin with the version in the backup beside the one installed, and the review says what will be replaced before anything starts.
+4. The Updates screen: how old the last backup is, with Back up now, and where to restore a plugin or theme if an update breaks the site.
+5. Connecting: choose how your key is managed, then press Connect, or connect with a personal access token instead.
+6. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
 
