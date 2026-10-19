@@ -191,7 +191,7 @@ final class SafeGrd_Admin {
 			<p>Sign in to SafeGrd, or create a free account, in the tab that opens.</p>
 			<?php echo wp_kses_post( self::free_plan() ); ?>
 			<fieldset class="safegrd-custody">
-				<legend>Who keeps the encryption key</legend>
+				<legend>How your key is managed</legend>
 				<label>
 					<input type="radio" name="safegrd_custody" value="safegrd" checked>
 					<strong>SafeGrd-managed key</strong>

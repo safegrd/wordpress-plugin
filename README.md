@@ -16,7 +16,7 @@ includes by default.
    directory, which also delivers updates. The same zip is on
    [Releases](https://github.com/safegrd/wordpress-plugin/releases) for a site that cannot reach
    WordPress.org, or build it with `bin/build-zip.sh`.
-3. Tools, SafeGrd: choose who keeps the key and press **Connect**. Sign in or create an account
+3. Tools, SafeGrd: choose how your key is managed and press **Connect**. Sign in or create an account
    in the tab that opens, and type the code wp-admin shows.
 
 The first backup starts right after connecting, then runs once a day.
@@ -31,7 +31,7 @@ wp safegrd backup
 wp safegrd status
 ```
 
-## Who keeps the key
+## How your key is managed
 
 - **SafeGrd-managed key** (default): SafeGrd keeps your key sealed and releases it only to your
   enrolled hosts, so you can restore even after losing this site. SafeGrd's test restores use it.
