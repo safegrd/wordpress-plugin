@@ -82,6 +82,9 @@ final class SafeGrd_Restore {
 		global $wpdb;
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		$charset = $wpdb->get_charset_collate();
+		// Created afresh for each restore, so a table left by an older
+		// version of the plugin never keeps its old columns.
+		self::drop_tables();
 		dbDelta(
 			'CREATE TABLE ' . self::files_table() . " (
   seq int NOT NULL,
@@ -98,15 +101,26 @@ final class SafeGrd_Restore {
 			'CREATE TABLE ' . self::index_table() . " (
   id char(64) NOT NULL,
   pack char(32) NOT NULL,
-  offset bigint NOT NULL,
+  pack_offset bigint NOT NULL,
   length bigint NOT NULL,
   raw_length bigint NOT NULL,
   type tinyint NOT NULL,
   PRIMARY KEY  (id)
 ) $charset;"
 		);
-		$wpdb->query( $wpdb->prepare( 'TRUNCATE TABLE %i', self::files_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
-		$wpdb->query( $wpdb->prepare( 'TRUNCATE TABLE %i', self::index_table() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table.
+		foreach ( array( self::files_table(), self::index_table() ) as $table ) {
+			if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ) !== $table ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- whether the plugin's own table exists.
+				throw new SafeGrd_Exception( esc_html( 'The database refused the plugin table ' . $table . ( '' !== $wpdb->last_error ? ': ' . $wpdb->last_error : '' ) ), 'other' );
+			}
+		}
+	}
+
+	/** Throws when the query just run on one of the restore's tables failed. */
+	private static function ok( $table ) {
+		global $wpdb;
+		if ( '' !== $wpdb->last_error ) {
+			throw new SafeGrd_Exception( esc_html( 'Database error on ' . $table . ': ' . $wpdb->last_error ), 'other' );
+		}
 	}
 
 	private static function drop_tables() {
@@ -449,7 +463,9 @@ final class SafeGrd_Restore {
 		$this->reader = new SafeGrd_Repo_Reader( $this->client, SafeGrd_Settings::get( 'node_id' ), $this->job['prefix'], $this->identity() );
 		global $wpdb;
 		$index = array();
-		foreach ( $wpdb->get_results( $wpdb->prepare( 'SELECT id,pack,offset,length,raw_length,type FROM %i', self::index_table() ), ARRAY_N ) as $r ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT id,pack,pack_offset,length,raw_length,type FROM %i', self::index_table() ), ARRAY_N ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		self::ok( self::index_table() );
+		foreach ( $rows as $r ) {
 			$index[ $r[0] ] = array( $r[1], (int) $r[2], (int) $r[3], (int) $r[4], (int) $r[5] );
 		}
 		$this->reader->set_index( $index );
@@ -612,6 +628,7 @@ final class SafeGrd_Restore {
 				array_push( $args, $seq++, $path, (int) $e['size'], $e['sha256'], implode( ',', $e['content'] ), (int) $e['mode'] );
 			}
 			$wpdb->query( $wpdb->prepare( 'INSERT INTO %i (seq,path,size,sha256,content,mode) VALUES ' . implode( ',', $values ), array_merge( array( self::files_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
+			self::ok( self::files_table() );
 		}
 		foreach ( array_chunk( $this->reader->index(), 200, true ) as $chunk ) {
 			$values = array();
@@ -620,7 +637,8 @@ final class SafeGrd_Restore {
 				$values[] = '(%s,%s,%d,%d,%d,%d)';
 				array_push( $args, $id, $loc[0], $loc[1], $loc[2], $loc[3], $loc[4] );
 			}
-			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO %i (id,pack,offset,length,raw_length,type) VALUES ' . implode( ',', $values ), array_merge( array( self::index_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
+			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO %i (id,pack,pack_offset,length,raw_length,type) VALUES ' . implode( ',', $values ), array_merge( array( self::index_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
+			self::ok( self::index_table() );
 		}
 
 		$wp                         = $manifest['wordpress'];

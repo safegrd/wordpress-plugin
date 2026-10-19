@@ -248,7 +248,9 @@ final class SafeGrd_Pack {
  * plaintext, and the files table holds paths, sizes and times.
  */
 final class SafeGrd_Repo_Cache {
-	const VERSION = 1;
+	// 2: the blobs table's offset column is pack_offset. MariaDB 10.6 and later
+	// reserve OFFSET, so version 1's table was never created there.
+	const VERSION = 2;
 
 	public static function files_table() {
 		global $wpdb;
@@ -261,13 +263,17 @@ final class SafeGrd_Repo_Cache {
 	}
 
 	/**
-	 * Creates the tables when they are missing or older than this plugin.
+	 * Creates the tables when they are missing or older than this plugin. An
+	 * older version's tables are dropped, both together: a files row names
+	 * blobs, so keeping one table without the other would make the next
+	 * snapshot name blobs this site has no record of.
 	 */
 	public static function install() {
 		if ( (int) get_option( 'safegrd_cache_version', 0 ) === self::VERSION ) {
 			return;
 		}
 		global $wpdb;
+		self::forget_all();
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		$charset = $wpdb->get_charset_collate();
 		dbDelta(
@@ -293,7 +299,7 @@ final class SafeGrd_Repo_Cache {
   type tinyint NOT NULL,
   pack_id char(32) NOT NULL,
   pack_bytes bigint NOT NULL,
-  offset bigint NOT NULL,
+  pack_offset bigint NOT NULL,
   length bigint NOT NULL,
   raw_length bigint NOT NULL,
   run_id char(32) NOT NULL,
@@ -302,7 +308,23 @@ final class SafeGrd_Repo_Cache {
   KEY run (epoch_id,run_id)
 ) $charset;"
 		);
+		foreach ( array( self::files_table(), self::blobs_table() ) as $table ) {
+			if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ) !== $table ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- whether the plugin's own table exists.
+				throw new SafeGrd_Exception( esc_html( 'The database refused the plugin table ' . $table . ( '' !== $wpdb->last_error ? ': ' . $wpdb->last_error : '' ) ), 'other' );
+			}
+		}
 		update_option( 'safegrd_cache_version', self::VERSION, false );
+	}
+
+	/**
+	 * Throws when the query just run failed. A cache that fails to record a
+	 * pack would otherwise surface only when the snapshot is written.
+	 */
+	private static function ok( $table ) {
+		global $wpdb;
+		if ( '' !== $wpdb->last_error ) {
+			throw new SafeGrd_Exception( esc_html( 'Database error on ' . $table . ': ' . $wpdb->last_error ), 'other' );
+		}
 	}
 
 	/** Forgets every epoch but this one. */
@@ -330,6 +352,7 @@ final class SafeGrd_Repo_Cache {
 		foreach ( array_chunk( array_values( array_unique( $ids ) ), 500 ) as $chunk ) {
 			$in   = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
 			$rows = $wpdb->get_col( $wpdb->prepare( "SELECT id FROM %i WHERE epoch_id = %s AND id IN ($in)", array_merge( array( self::blobs_table(), $epoch_id ), $chunk ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- the plugin's own table, which only this plugin reads and writes; $in is one %s per id, passed in the array.
+			self::ok( self::blobs_table() );
 			foreach ( $rows as $id ) {
 				$out[ $id ] = true;
 			}
@@ -347,7 +370,8 @@ final class SafeGrd_Repo_Cache {
 				$values[] = '(%s,%s,%d,%s,%d,%d,%d,%d,%s,0)';
 				array_push( $args, $epoch_id, $b['id'], $b['type'], $pack_id, $pack_bytes, $b['offset'], $b['length'], $b['raw_length'], $run_id );
 			}
-			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO %i (epoch_id,id,type,pack_id,pack_bytes,offset,length,raw_length,run_id,committed) VALUES ' . implode( ',', $values ), array_merge( array( self::blobs_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
+			$wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO %i (epoch_id,id,type,pack_id,pack_bytes,pack_offset,length,raw_length,run_id,committed) VALUES ' . implode( ',', $values ), array_merge( array( self::blobs_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
+			self::ok( self::blobs_table() );
 		}
 	}
 
@@ -358,17 +382,20 @@ final class SafeGrd_Repo_Cache {
 	public static function adopt( $epoch_id, $run_id ) {
 		global $wpdb;
 		$wpdb->query( $wpdb->prepare( 'UPDATE %i SET run_id = %s WHERE epoch_id = %s AND committed = 0', self::blobs_table(), $run_id, $epoch_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		self::ok( self::blobs_table() );
 	}
 
 	public static function mark_committed( $epoch_id, $run_id ) {
 		global $wpdb;
 		$wpdb->query( $wpdb->prepare( 'UPDATE %i SET committed = 1 WHERE epoch_id = %s AND run_id = %s', self::blobs_table(), $epoch_id, $run_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		self::ok( self::blobs_table() );
 	}
 
 	/** The blobs this run stored first, by pack: the run's index. */
 	public static function run_index( $epoch_id, $run_id ) {
 		global $wpdb;
-		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT id,type,pack_id,pack_bytes,offset,length,raw_length FROM %i WHERE epoch_id = %s AND run_id = %s ORDER BY pack_id, offset', self::blobs_table(), $epoch_id, $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT id,type,pack_id,pack_bytes,pack_offset,length,raw_length FROM %i WHERE epoch_id = %s AND run_id = %s ORDER BY pack_id, pack_offset', self::blobs_table(), $epoch_id, $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the plugin's own table, which only this plugin reads and writes.
+		self::ok( self::blobs_table() );
 		$packs = array();
 		foreach ( $rows as $r ) {
 			if ( ! isset( $packs[ $r['pack_id'] ] ) ) {
@@ -381,7 +408,7 @@ final class SafeGrd_Repo_Cache {
 			$packs[ $r['pack_id'] ]['blobs'][] = array(
 				'id'         => $r['id'],
 				'type'       => (int) $r['type'],
-				'offset'     => (int) $r['offset'],
+				'offset'     => (int) $r['pack_offset'],
 				'length'     => (int) $r['length'],
 				'raw_length' => (int) $r['raw_length'],
 			);
@@ -402,6 +429,7 @@ final class SafeGrd_Repo_Cache {
 		foreach ( array_chunk( array_values( array_unique( $ids ) ), 500 ) as $chunk ) {
 			$in   = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,pack_id,run_id FROM %i WHERE epoch_id = %s AND id IN ($in)", array_merge( array( self::blobs_table(), $epoch_id ), $chunk ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- the plugin's own table, which only this plugin reads and writes; $in is one %s per id, passed in the array.
+			self::ok( self::blobs_table() );
 			foreach ( $rows as $r ) {
 				$found[ $r['id'] ]       = true;
 				$packs[ $r['pack_id'] ] = true;
@@ -462,6 +490,7 @@ final class SafeGrd_Repo_Cache {
 				array_push( $args, $epoch_id, hash( 'sha256', $r['path'] ), $r['path'], $r['size'], $r['mtime'], $r['inode'], $r['mode'], $r['sha256'], implode( ',', $r['content'] ), $run_id );
 			}
 			$wpdb->query( $wpdb->prepare( 'INSERT INTO %i (epoch_id,path_hash,path,size,mtime,inode,mode,sha256,blobs,run_id) VALUES ' . implode( ',', $values ) . ' ON DUPLICATE KEY UPDATE size=VALUES(size), mtime=VALUES(mtime), inode=VALUES(inode), mode=VALUES(mode), sha256=VALUES(sha256), blobs=VALUES(blobs), run_id=VALUES(run_id)', array_merge( array( self::files_table() ), $args ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- the plugin's own table, which only this plugin reads and writes; the VALUES list is placeholders only, one group per row, filled by prepare.
+			self::ok( self::files_table() );
 		}
 	}
 
