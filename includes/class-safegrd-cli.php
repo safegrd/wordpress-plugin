@@ -577,7 +577,7 @@ final class SafeGrd_CLI {
 		}
 		$storage = SafeGrd_Backup::storage_usage();
 		if ( is_wp_error( $storage ) ) {
-			WP_CLI::warning( 'SafeGrd did not say how much hosted storage is held: ' . $storage->get_error_message() );
+			WP_CLI::warning( 'SafeGrd did not say where this site\'s backups are stored: ' . $storage->get_error_message() );
 		} else {
 			WP_CLI::line( 'Storage:  ' . $storage['line'] );
 			if ( '' !== $storage['warning'] ) {

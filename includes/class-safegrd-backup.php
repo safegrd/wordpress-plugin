@@ -1410,12 +1410,30 @@ final class SafeGrd_Backup {
 	 * gave one (from 80%, in the plan's own terms: refused, billed or in
 	 * grace). The plugin knows no quota of its own.
 	 *
-	 * @return array{line:string,warning:string,used:int,quota:int}|WP_Error
+	 * @return array{line:string,where:string,warning:string,used:int,quota:int}|WP_Error
 	 */
 	public static function storage_usage() {
 		$info = SafeGrd_Client::for_site()->call( 'GET', '/api/v1/nodes/' . rawurlencode( SafeGrd_Settings::get( 'node_id' ) ) . '/hosted', null, 15 );
 		if ( is_wp_error( $info ) ) {
 			return $info;
+		}
+		$warning = (string) ( $info['warning'] ?? '' );
+		if ( ! empty( $info['bucket'] ) ) {
+			// The project's own bucket: SafeGrd signs each request with the
+			// key it holds for it, and meters none of it.
+			return array(
+				'line'    => 'Your own bucket, ' . $info['bucket'],
+				'where'   => sprintf(
+					'Object Lock in %s mode keeps each backup until its date. SafeGrd holds this bucket\'s key, encrypted, and uses it only to sign this site\'s uploads and reads, so the site holds no storage key.',
+					strtolower( (string) ( $info['worm_mode'] ?? 'compliance' ) )
+				),
+				'warning' => $warning,
+				'used'    => 0,
+				'quota'   => 0,
+			);
+		}
+		if ( ! empty( $info['storage_note'] ) ) {
+			$warning = trim( $info['storage_note'] . ' ' . $warning );
 		}
 		$used  = (int) ( $info['used_bytes'] ?? 0 );
 		$quota = (int) ( $info['quota_bytes'] ?? 0 );
@@ -1424,7 +1442,8 @@ final class SafeGrd_Backup {
 			: sprintf( '%s held, across every surface in the account', size_format( $used, 1 ) );
 		return array(
 			'line'    => $line,
-			'warning' => (string) ( $info['warning'] ?? '' ),
+			'where'   => 'SafeGrd-hosted storage, locked against deletion: Object Lock in compliance mode keeps each backup until its date, and no one can delete it sooner.',
+			'warning' => $warning,
 			'used'    => $used,
 			'quota'   => $quota,
 		);

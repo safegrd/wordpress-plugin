@@ -266,9 +266,11 @@
 
 	// Hosted storage held against the plan, and the server's warning in
 	// its own words: refused, billed or in grace, from 80% of the plan.
-	function showStorage(line, warning, used, quota) {
+	function showStorage(line, warning, used, quota, where) {
 		var node = document.getElementById("safegrd-storage");
 		if (!node || !line) return;
+		var whereNode = document.getElementById("safegrd-storage-where");
+		if (whereNode && where) whereNode.textContent = where;
 		var meter = document.getElementById("safegrd-meter");
 		if (meter && quota > 0) {
 			var pct = Math.min(100, used * 100 / quota);
@@ -312,7 +314,7 @@
 						drill.appendChild(plans);
 					}
 				}
-				showStorage(s.storage, s.storage_warning, s.storage_used, s.storage_quota);
+				showStorage(s.storage, s.storage_warning, s.storage_used, s.storage_quota, s.storage_where);
 				renderSnapshots(s.snapshots, s.snapshots_error);
 			}
 			return s;

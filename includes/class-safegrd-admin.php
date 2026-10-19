@@ -279,7 +279,7 @@ final class SafeGrd_Admin {
 					<h2>Storage</h2>
 					<div class="safegrd-meter" id="safegrd-meter" hidden><span></span></div>
 					<p id="safegrd-storage">Asking SafeGrd...</p>
-					<p class="description">SafeGrd-hosted storage, locked against deletion: Object Lock in compliance mode keeps each backup until its date, and no one can delete it sooner.</p>
+					<p class="description" id="safegrd-storage-where"></p>
 					<p>
 						<?php if ( 'safegrd' === $custody ) : ?>
 							<strong>SafeGrd-managed key.</strong> SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
@@ -291,7 +291,7 @@ final class SafeGrd_Admin {
 			</div>
 			<div class="safegrd-card">
 				<h2>Recent backups</h2>
-				<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. On the free plan each backup is a full copy instead, kept on its own. Every backup is a full restore point.</p>
+				<p class="description">The first backup of each month uploads every file. Later ones upload only what changed since, so they are small. In hosted storage on the free plan each backup is a full copy instead, kept on its own. Every backup is a full restore point.</p>
 				<div id="safegrd-snapshots"><p class="description">Asking SafeGrd...</p></div>
 			</div>
 		</div>
@@ -850,6 +850,7 @@ final class SafeGrd_Admin {
 				$out['storage'] = 'SafeGrd did not answer: ' . $storage->get_error_message();
 			} else {
 				$out['storage']         = $storage['line'];
+				$out['storage_where']   = $storage['where'];
 				$out['storage_warning'] = $storage['warning'];
 				$out['storage_used']    = $storage['used'];
 				$out['storage_quota']   = $storage['quota'];

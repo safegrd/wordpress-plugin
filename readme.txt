@@ -4,7 +4,7 @@ Tags: backup, database backup, restore, migration, cloud backup
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.11
+Stable tag: 0.1.12
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -84,7 +84,7 @@ Everything on Tools > SafeGrd also works from WP-CLI, for a host with a shell or
 This plugin sends backups to SafeGrd ([safegrd.dev](https://safegrd.dev)), a backup service. Nothing is sent until you connect the site on Tools > SafeGrd, or with `wp safegrd connect`.
 
 * safegrd.dev receives the site's name and URL, the database name, the WordPress and PHP versions, table row counts, file counts, and the time and size of each backup. It holds the site's key sealed when you choose a SafeGrd-managed key. [Terms](https://safegrd.dev/terms), [privacy policy](https://safegrd.dev/privacy).
-* The encrypted backups are uploaded from this server straight to SafeGrd's storage bucket at Backblaze B2 (`s3.us-east-005.backblazeb2.com`), through URLs safegrd.dev signs for each upload. A restore downloads them the same way. Backblaze [terms](https://www.backblaze.com/company/policy/terms-of-service), [privacy policy](https://www.backblaze.com/company/policy/privacy). SafeGrd's sub-processors are listed at [safegrd.dev/subprocessors](https://safegrd.dev/subprocessors).
+* The encrypted backups are uploaded from this server straight to SafeGrd's storage bucket at Backblaze B2 (`s3.us-east-005.backblazeb2.com`), through URLs safegrd.dev signs for each upload. A restore downloads them the same way. When the site's project stores in your own bucket, they go to that bucket instead, through URLs safegrd.dev signs with the key it holds for it. Backblaze [terms](https://www.backblaze.com/company/policy/terms-of-service), [privacy policy](https://www.backblaze.com/company/policy/privacy). SafeGrd's sub-processors are listed at [safegrd.dev/subprocessors](https://safegrd.dev/subprocessors).
 
 == Installation ==
 
@@ -156,7 +156,13 @@ A backup runs in slices of a few seconds and uploads only what changed since the
 
 = Where are the backups stored? =
 
-In SafeGrd-hosted storage, encrypted on your server first, and locked against deletion until each backup's lock date. Nobody can read them without the key, and nobody can delete them early.
+In SafeGrd-hosted storage, or in your own S3 bucket. Either way they are encrypted on your server first and locked against deletion until each backup's lock date. Nobody can read them without the key, and nobody can delete them early.
+
+= Can I back up to my own S3 bucket? =
+
+Yes, on a bucket with Object Lock on. In the SafeGrd console, set the site's project to store in your own bucket, save the bucket's key so SafeGrd holds it, and test the bucket. The site's next backup goes there, and SafeGrd test-restores it there.
+
+SafeGrd holds the bucket's key, encrypted, and uses it only to sign this site's uploads and reads, so the site holds no storage key. Tools > SafeGrd and `wp safegrd status` name the bucket. The backups are filed the way the SafeGrd CLI files them, so a host with the bucket's key can verify and restore them without SafeGrd.
 
 = Is WooCommerce backed up? =
 
@@ -183,6 +189,10 @@ Scheduled backups and test restores. [safegrd.dev/pricing](https://safegrd.dev/p
 5. The code to check in the sign-in tab that opens. The page finishes connecting once you approve.
 
 == Changelog ==
+
+= 0.1.12 =
+* Back up to your own S3 bucket. When the site's project in SafeGrd stores in your own bucket with Object Lock on, and SafeGrd holds the bucket's key, the next backup goes there and SafeGrd test-restores it there. Tools > SafeGrd and `wp safegrd status` name the bucket, or say why the site is still on hosted storage.
+* The Connect card asks how your key is managed, and links to the plans on safegrd.dev instead of quoting one.
 
 = 0.1.11 =
 * A sign-in started with wp safegrd connect that expires says to run wp safegrd connect again, not to press Connect.
