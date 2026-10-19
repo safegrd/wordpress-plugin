@@ -53,7 +53,7 @@ final class SafeGrd_Connect {
 			'device_code' => $s['device_code'],
 			'custody'     => 'local' === $custody ? 'local' : 'safegrd',
 		);
-		set_transient( self::SESSION, $session, 10 * MINUTE_IN_SECONDS );
+		set_transient( self::SESSION, $session, 15 * MINUTE_IN_SECONDS );
 		$session['approve_url'] = self::approve_url( $base, $session );
 		return $session;
 	}
@@ -89,7 +89,7 @@ final class SafeGrd_Connect {
 	public static function poll() {
 		$session = get_transient( self::SESSION );
 		if ( ! is_array( $session ) ) {
-			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. ' . self::again() );
+			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 15 minutes. ' . self::again() );
 		}
 		if ( isset( $session['pat'] ) ) {
 			return array(
@@ -117,7 +117,7 @@ final class SafeGrd_Connect {
 		}
 		if ( isset( $s['status'] ) && 'expired' === $s['status'] ) {
 			delete_transient( self::SESSION );
-			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 10 minutes. ' . self::again() );
+			return new WP_Error( 'safegrd_expired', 'The sign-in expired after 15 minutes. ' . self::again() );
 		}
 		if ( empty( $s['token'] ) || ( isset( $s['status'] ) && 'authorized' !== $s['status'] ) ) {
 			return array(

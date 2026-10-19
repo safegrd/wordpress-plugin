@@ -68,8 +68,8 @@ final class SafeGrd_CLI {
 			WP_CLI::line( 'Code: ' . $s['user_code'] );
 			WP_CLI::line( 'Open this URL on any device, sign in or sign up, and check it shows this code:' );
 			WP_CLI::line( '  ' . $s['approve_url'] );
-			WP_CLI::line( 'Waiting for the approval (up to 10 minutes).' );
-			$deadline = time() + 600;
+			WP_CLI::line( 'Waiting for the approval (up to 15 minutes).' );
+			$deadline = time() + 15 * MINUTE_IN_SECONDS;
 			$done     = null;
 			while ( time() < $deadline ) {
 				sleep( 2 );
@@ -80,7 +80,7 @@ final class SafeGrd_CLI {
 				}
 			}
 			if ( null === $done ) {
-				WP_CLI::error( 'The sign-in was not approved within 10 minutes. Run wp safegrd connect again.' );
+				WP_CLI::error( 'The sign-in was not approved within 15 minutes. Run wp safegrd connect again.' );
 			}
 		}
 		if ( is_wp_error( $done ) ) {

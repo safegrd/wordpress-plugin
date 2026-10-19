@@ -116,6 +116,7 @@ On Tools > SafeGrd, Restore & download, open a backup from before the update, ch
 * Backups and restores work on MariaDB 10.6 and newer. Before, the first backup failed with "The snapshot would name … blobs this site has no record of storing", because a table the plugin keeps used a column name MariaDB reserves. MySQL sites were not affected.
 * If the plugin cannot write to its own tables, the backup stops at once and names the database error.
 * The first backup after this update uploads every file again, once, because the plugin rebuilds its record of what it uploaded.
+* A sign-in from Connect waits 15 minutes for you to approve it, up from 10, long enough to create an account and enter the code SafeGrd emails you.
 
 = 0.1.12 =
 * Back up to your own S3 bucket. When the site's project in SafeGrd stores in your own bucket with Object Lock on, and SafeGrd holds the bucket's key, the next backup goes there and SafeGrd test-restores it there. Tools > SafeGrd and `wp safegrd status` name the bucket, or say why the site is still on hosted storage.
