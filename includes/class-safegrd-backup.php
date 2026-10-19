@@ -267,7 +267,7 @@ final class SafeGrd_Backup {
 		$node_id = SafeGrd_Settings::get( 'node_id' );
 		$info    = $this->client->call( 'GET', '/api/v1/nodes/' . rawurlencode( $node_id ) . '/hosted' );
 		if ( is_wp_error( $info ) ) {
-			throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $info->get_error_message() ), 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Storage: ' . $info->get_error_message() ), 'storage' );
 		}
 		if ( ! empty( $info['warning'] ) ) {
 			$this->say( 'Warning: ' . $info['warning'] );

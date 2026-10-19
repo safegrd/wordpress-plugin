@@ -510,7 +510,7 @@ final class SafeGrd_Repo_Client {
 				continue;
 			}
 			$reason = ( 402 === $status || 507 === $status ) ? 'quota' : 'storage';
-			throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $r->get_error_message() ), esc_html( $reason ) );
+			throw new SafeGrd_Exception( esc_html( 'Storage: ' . $r->get_error_message() ), esc_html( $reason ) );
 		}
 	}
 

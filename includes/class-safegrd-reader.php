@@ -210,7 +210,7 @@ final class SafeGrd_Repo_Reader {
 		foreach ( array_chunk( $want, 200 ) as $batch ) {
 			$r = $this->client->call( 'POST', $this->base . '/download', array( 'keys' => $batch ), 60 );
 			if ( is_wp_error( $r ) ) {
-				throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $r->get_error_message() ), 'storage' );
+				throw new SafeGrd_Exception( esc_html( 'Storage: ' . $r->get_error_message() ), 'storage' );
 			}
 			foreach ( (array) ( $r['objects'] ?? array() ) as $o ) {
 				$this->urls[ $o['key'] ] = array( $o['url'], strtotime( $o['expires_at'] ?? '' ) ?: time() + 600 );

@@ -499,7 +499,7 @@ final class SafeGrd_Restore {
 		}
 		$epochs = $this->client->call( 'GET', '/api/v1/nodes/' . rawurlencode( SafeGrd_Settings::get( 'node_id' ) ) . '/hosted/repo/epochs?' . http_build_query( array( 'node_id' => $rec['node_id'], 'surface_id' => SafeGrd_Backup::SURFACE_ID ) ), null, 30 );
 		if ( is_wp_error( $epochs ) ) {
-			throw new SafeGrd_Exception( esc_html( 'Hosted storage: ' . $epochs->get_error_message() ), 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Storage: ' . $epochs->get_error_message() ), 'storage' );
 		}
 		$prefix = '';
 		foreach ( (array) ( $epochs['epochs'] ?? array() ) as $e ) {
