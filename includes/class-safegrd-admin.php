@@ -415,36 +415,13 @@ final class SafeGrd_Admin {
 	}
 
 	/**
-	 * What the free plan includes, in the server's own words: the catalogue
-	 * is the server's, so this page never disagrees with what it enforces.
-	 * Nothing when the server cannot be reached, and nothing is asked of it
-	 * until the site is connected: the first request to SafeGrd is the one
-	 * the administrator starts with Connect.
+	 * Where the plans are. The Connect card shows only before the site is
+	 * connected, and nothing is asked of SafeGrd until then: the first request
+	 * to it is the one the administrator starts with Connect. So the card
+	 * links to the pricing page, which renders from the server's catalogue.
 	 */
 	private static function free_plan() {
-		if ( ! SafeGrd_Settings::connected() ) {
-			return '<p>What the free plan and each paid plan include: <a href="https://safegrd.dev/pricing" target="_blank" rel="noopener">safegrd.dev/pricing</a>.</p>';
-		}
-		$plans = get_transient( 'safegrd_plans' );
-		if ( ! is_array( $plans ) ) {
-			$r = ( new SafeGrd_Client( SafeGrd_Settings::server_url() ) )->call( 'GET', '/api/v1/plans', null, 10 );
-			if ( is_wp_error( $r ) || empty( $r['plans'] ) ) {
-				return '';
-			}
-			$plans = $r['plans'];
-			set_transient( 'safegrd_plans', $plans, DAY_IN_SECONDS );
-		}
-		foreach ( $plans as $p ) {
-			if ( isset( $p['id'] ) && 'free' === $p['id'] ) {
-				return sprintf(
-					'<p>On the free plan: %s %s. Test restores: %s.</p>',
-					esc_html( $p['tagline'] ?? '' ),
-					esc_html( $p['backup_cadence'] ?? '' ),
-					esc_html( strtolower( $p['drill_cadence'] ?? '' ) )
-				);
-			}
-		}
-		return '';
+		return '<p>What the free plan and each paid plan include: <a href="https://safegrd.dev/pricing" target="_blank" rel="noopener">safegrd.dev/pricing</a>.</p>';
 	}
 
 	/**

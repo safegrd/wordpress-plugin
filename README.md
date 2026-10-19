@@ -16,7 +16,7 @@ includes by default.
    directory, which also delivers updates. The same zip is on
    [Releases](https://github.com/safegrd/wordpress-plugin/releases) for a site that cannot reach
    WordPress.org, or build it with `bin/build-zip.sh`.
-3. Tools, SafeGrd: choose how your key is managed and press **Connect**. Sign in or create an account
+3. Tools > SafeGrd: choose how your key is managed and press **Connect**. Sign in or create an account
    in the tab that opens, and type the code wp-admin shows.
 
 The first backup starts right after connecting, then runs once a day.
@@ -71,7 +71,7 @@ every attachment the database names (`_wp_attached_file`) is in the snapshot.
 
 ## Restore
 
-From wp-admin: open Tools, SafeGrd, *Restore & download*. The list shows this site's backups;
+From wp-admin: open Tools > SafeGrd, *Restore & download*. The list shows this site's backups;
 the *Site* filter shows another site's, or every site's in the account. *Open* a backup to see
 what it holds: each part's size, the WordPress and PHP versions, and its plugins, themes and
 tables. Tick what to take, press *Review restore*, and the review lists what will be replaced
@@ -127,7 +127,7 @@ or theme, so visitors see the maintenance page while that backup runs.
 - No new backup when one finished in the last hour, or while a backup or restore is under way.
   Updating this plugin takes none.
 - A failed backup does not stop the update. The failure is in the update's output and on
-  *Tools, SafeGrd*.
+  *Tools > SafeGrd*.
 
 The Updates, Plugins and Themes screens also show how old the last backup is, with *Back up
 now*, while updates wait. If an update breaks the site, restore that plugin or theme alone from
