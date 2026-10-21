@@ -185,6 +185,9 @@ final class SafeGrd_Repo_Reader {
 	const HEAD_SPAN = 1048576;
 	/** No one prefetch request reads more than this. */
 	const PREFETCH_SPAN = 16777216;
+	/** Bytes of blobs read ahead of being asked for, at most. */
+	const SPARE_BYTES = 33554432;
+
 
 	/**
 	 * @param SafeGrd_Client $client   Node-token client.
@@ -303,10 +306,51 @@ final class SafeGrd_Repo_Reader {
 				}
 			}
 		}
+		$this->heads      = null;
+		$this->packs      = null;
+		$this->all_signed = false;
+	}
+
+	/** @var array|null Where each pack's first record begins: the length of its header. */
+	private $heads = null;
+
+	/** @var bool Whether every pack of the index was signed once already. */
+	private $all_signed = false;
+
+	/** @var array|null Each pack's blobs, as [id, offset, length], in the order they sit in it. */
+	private $packs = null;
+
+	/** @var array Blobs read ahead of being asked for, by id, with their length. */
+	private $spare = array();
+
+	/** @var int The bytes of $spare. */
+	private $spare_bytes = 0;
+
+	/** The blobs of a pack, in their order in it. */
+	private function blobs_of( $pack ) {
+		if ( null === $this->packs ) {
+			$this->packs = array();
+			foreach ( $this->index as $id => $loc ) {
+				$this->packs[ $loc[0] ][] = array( (string) $id, $loc[1], $loc[2] );
+			}
+			foreach ( $this->packs as &$list ) {
+				usort(
+					$list,
+					function ( $a, $b ) {
+						return $a[1] - $b[1];
+					}
+				);
+			}
+			unset( $list );
+		}
+		return $this->packs[ $pack ] ?? array();
 	}
 
 	public function set_index( array $index ) {
-		$this->index = $index;
+		$this->index      = $index;
+		$this->heads      = null;
+		$this->packs      = null;
+		$this->all_signed = false;
 	}
 
 	public function index() {
@@ -323,8 +367,12 @@ final class SafeGrd_Repo_Reader {
 		if ( isset( $this->pack_keys[ $pack ] ) ) {
 			return $this->pack_keys[ $pack ];
 		}
-		$key  = $this->prefix . '/packs/' . $pack;
-		$head = null === $head ? $this->get( $key, 0, 12 ) : $head;
+		$key = $this->prefix . '/packs/' . $pack;
+		if ( null === $head ) {
+			// The header and the wrapped key in one read: a wrapped key is a
+			// few hundred bytes.
+			$head = $this->get_head( $pack, $key );
+		}
 		if ( 'SGPK' !== substr( $head, 0, 4 ) || 1 !== ord( $head[4] ) ) {
 			throw new SafeGrd_Exception( esc_html( 'Pack ' . $pack . ' is not a pack this plugin reads.' ), 'other' );
 		}
@@ -359,7 +407,9 @@ final class SafeGrd_Repo_Reader {
 				$order[ $id ]                       = $i;
 			}
 		}
-		$spans = array();
+		$spans         = array();
+		$pending       = array();
+		$pending_bytes = 0;
 		foreach ( $by_pack as $pack => $blobs ) {
 			usort(
 				$blobs,
@@ -367,6 +417,24 @@ final class SafeGrd_Repo_Reader {
 					return $this->index[ $a ][1] - $this->index[ $b ][1];
 				}
 			);
+			// The rest of the pack after the last blob asked for comes in
+			// the same read: files are restored in the order they were
+			// stored, so the next files' blobs follow these, and reading
+			// them now saves reading the pack again. Kept until used, up
+			// to SPARE_BYTES.
+			$last = $this->index[ end( $blobs ) ][1];
+			foreach ( $this->blobs_of( $pack ) as $b ) {
+				if ( $b[1] <= $last || isset( $this->records[ $b[0] ] ) || isset( $order[ $b[0] ] ) ) {
+					continue;
+				}
+				if ( $this->spare_bytes + $pending_bytes + $b[2] > self::SPARE_BYTES ) {
+					break;
+				}
+				$blobs[]          = $b[0];
+				$order[ $b[0] ]   = PHP_INT_MAX;
+				$pending[ $b[0] ] = $b[2];
+				$pending_bytes   += $b[2];
+			}
 			$span = array();
 			foreach ( $blobs as $id ) {
 				$off = $this->index[ $id ][1];
@@ -395,14 +463,46 @@ final class SafeGrd_Repo_Reader {
 		usort(
 			$spans,
 			function ( $a, $b ) {
-				return $a['first'] - $b['first'];
+				return $a['first'] <=> $b['first'];
 			}
 		);
+		// A pack whose key is not known yet is read from its start, so its
+		// header comes with the blobs, when they begin near it. And every
+		// pack's link is signed in one request rather than one each.
+		$started = array();
+		$keys    = array();
+		foreach ( $spans as &$span ) {
+			if ( ! isset( $started[ $span['pack'] ] ) && ! isset( $this->pack_keys[ $span['pack'] ] ) && $span['from'] <= self::PREFETCH_GAP ) {
+				$span['from'] = 0;
+			}
+			$started[ $span['pack'] ] = true;
+			$keys[]                   = $this->prefix . '/packs/' . $span['pack'];
+		}
+		unset( $span );
+		// With them, every other pack of the index not signed yet: links
+		// are signed 200 to a request, so a slice asks once or twice.
+		if ( ! $this->all_signed ) {
+			$all = array();
+			foreach ( $this->index as $loc ) {
+				$all[ $loc[0] ] = true;
+			}
+			foreach ( array_keys( $all ) as $pack ) {
+				$keys[] = $this->prefix . '/packs/' . $pack;
+			}
+			$this->all_signed = true;
+		}
+		$this->urls( array_values( array_unique( $keys ) ) );
 		foreach ( $spans as $span ) {
 			if ( $deadline > 0 && microtime( true ) >= $deadline ) {
 				return;
 			}
 			$this->fetch_span( $span['pack'], $span );
+			foreach ( $span['ids'] as $id ) {
+				if ( isset( $pending[ $id ] ) ) {
+					$this->spare[ $id ] = $pending[ $id ];
+					$this->spare_bytes += $pending[ $id ];
+				}
+			}
 		}
 	}
 
@@ -421,8 +521,27 @@ final class SafeGrd_Repo_Reader {
 		$this->prefetch( $ids );
 	}
 
+	/**
+	 * A pack's header and wrapped key, which end where its first record
+	 * begins: one read, rather than the header and then the key.
+	 */
+	private function get_head( $pack, $key ) {
+		if ( null === $this->heads ) {
+			$this->heads = array();
+			foreach ( $this->index as $loc ) {
+				if ( ! isset( $this->heads[ $loc[0] ] ) || $loc[1] < $this->heads[ $loc[0] ] ) {
+					$this->heads[ $loc[0] ] = $loc[1];
+				}
+			}
+		}
+		return $this->get( $key, 0, isset( $this->heads[ $pack ] ) && $this->heads[ $pack ] > 12 ? $this->heads[ $pack ] : 12 );
+	}
+
 	private function fetch_span( $pack, array $span ) {
 		$bytes = $this->get( $this->prefix . '/packs/' . $pack, $span['from'], $span['end'] - $span['from'] );
+		if ( 0 === $span['from'] && ! isset( $this->pack_keys[ $pack ] ) ) {
+			$this->pack_key( $pack, $bytes );
+		}
 		foreach ( $span['ids'] as $id ) {
 			$this->records[ $id ] = substr( $bytes, $this->index[ $id ][1] - $span['from'], $this->index[ $id ][2] );
 		}
@@ -442,6 +561,10 @@ final class SafeGrd_Repo_Reader {
 		if ( isset( $this->records[ $id ] ) ) {
 			$record = $this->records[ $id ];
 			unset( $this->records[ $id ] );
+			if ( isset( $this->spare[ $id ] ) ) {
+				$this->spare_bytes -= $this->spare[ $id ];
+				unset( $this->spare[ $id ] );
+			}
 		} elseif ( ! isset( $this->pack_keys[ $pack ] ) && $offset + $length <= self::HEAD_SPAN ) {
 			// The pack's key is in its header, before every record: a record
 			// near the start comes with it in one read instead of three.

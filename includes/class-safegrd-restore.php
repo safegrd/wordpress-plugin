@@ -992,6 +992,7 @@ final class SafeGrd_Restore {
 		if ( 0 === $this->job['part'] && 0 === $this->job['offset'] ) {
 			$this->say( 'Loading the database into new tables' );
 		}
+		$ahead = array();
 		while ( $this->job['part'] < $this->job['parts'] ) {
 			$row     = $this->row( $this->job['part'] );
 			$content = '' === $row['content'] ? array() : explode( ',', $row['content'] );
@@ -999,11 +1000,18 @@ final class SafeGrd_Restore {
 			$pos     = 0; // bytes of the part before the buffer
 			$buf     = '';
 			$hash    = 0 === $skip ? hash_init( 'sha256' ) : null;
-			foreach ( $content as $id ) {
+			foreach ( $content as $k => $id ) {
 				$len = $this->reader->index()[ $id ][3];
 				if ( $pos + $len <= $skip ) {
 					$pos += $len; // loaded by an earlier slice
 					continue;
+				}
+				// A few blobs at a time, with the rest of their pack: the
+				// parts of the dump sit side by side in the same packs.
+				if ( ! isset( $ahead[ $id ] ) ) {
+					$next  = array_slice( $content, $k, 6 );
+					$ahead = array_flip( $next );
+					$this->reader->prefetch( $next );
 				}
 				$chunk = $this->reader->blob( $id );
 				if ( $hash ) {
