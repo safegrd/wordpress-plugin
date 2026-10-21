@@ -267,7 +267,7 @@ final class SafeGrd_Backup {
 		$node_id = SafeGrd_Settings::get( 'node_id' );
 		$info    = $this->client->call( 'GET', '/api/v1/nodes/' . rawurlencode( $node_id ) . '/hosted' );
 		if ( is_wp_error( $info ) ) {
-			throw new SafeGrd_Exception( esc_html( 'Storage: ' . $info->get_error_message() ), 'storage' );
+			throw new SafeGrd_Exception( esc_html( 'Storage: ' . SafeGrd_Client::refusal_text( $info ) ), esc_html( SafeGrd_Client::reason_of( $info ) ) );
 		}
 		if ( ! empty( $info['warning'] ) ) {
 			$this->say( 'Warning: ' . $info['warning'] );
@@ -1342,20 +1342,28 @@ final class SafeGrd_Backup {
 		if ( SafeGrd_Settings::connected() ) {
 			$this->client = $this->client ? $this->client : SafeGrd_Client::for_site();
 			$now          = gmdate( 'Y-m-d\TH:i:s\Z' );
-			$rec          = $this->client->call(
-				'POST',
-				'/api/v1/snapshots',
-				array(
-					'snapshot_id'    => $snapshot_id ? $snapshot_id : 'snap-' . gmdate( 'Ymd-His' ) . '-' . substr( bin2hex( random_bytes( 4 ) ), 0, 6 ),
-					'node_id'        => SafeGrd_Settings::get( 'node_id' ),
-					'surface_type'   => 'wordpress',
-					'status'         => 'failed',
-					'error_message'  => $message,
-					'failure_reason' => $reason,
-					'created_at'     => $now,
-					'completed_at'   => $now,
-				)
+			$failed       = array(
+				'snapshot_id'    => $snapshot_id ? $snapshot_id : 'snap-' . gmdate( 'Ymd-His' ) . '-' . substr( bin2hex( random_bytes( 4 ) ), 0, 6 ),
+				'node_id'        => SafeGrd_Settings::get( 'node_id' ),
+				'surface_type'   => 'wordpress',
+				'status'         => 'failed',
+				'error_message'  => $message,
+				'failure_reason' => $reason,
+				'created_at'     => $now,
+				'completed_at'   => $now,
 			);
+			// A run that failed while finishing may have stored its snapshot's
+			// objects, which stay locked: the record says where, and until
+			// when, so the console does not call it a run that stored nothing.
+			if ( is_array( $this->job ) && ! empty( $this->job['finishing'] ) && ! empty( $this->job['storage_uri'] ) ) {
+				$failed['storage_uri']          = $this->job['storage_uri'];
+				$failed['epoch_id']             = $this->job['epoch_id'];
+				$failed['object_class']         = $this->job['class'];
+				$failed['format']               = 'repo-v1';
+				$failed['worm_mode']            = $this->job['worm_mode'];
+				$failed['worm_retention_until'] = SafeGrd_Repo_Format::rfc3339( $this->job['locked'] ?? $this->job['retain'] );
+			}
+			$rec = $this->client->call( 'POST', '/api/v1/snapshots', $failed );
 			if ( is_wp_error( $rec ) ) {
 				$run['message'] .= ' The server was not told either: ' . $rec->get_error_message();
 				$this->say( 'Warning: the server was not told of this failure: ' . $rec->get_error_message() );

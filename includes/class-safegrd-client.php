@@ -121,6 +121,41 @@ final class SafeGrd_Client {
 	}
 
 	/**
+	 * The failure reason the server records for a refusal from its API: a
+	 * full quota is quota, and a token refused or a request refused for
+	 * the account (an unverified address) is config, and any other refusal
+	 * other: no retry fixes them. A server that failed or could not be
+	 * reached is storage, tried again in a later slice.
+	 */
+	public static function reason_of( WP_Error $e ) {
+		$status = (int) ( $e->get_error_data()['status'] ?? 0 );
+		if ( 402 === $status || 507 === $status ) {
+			return 'quota';
+		}
+		if ( 401 === $status || 403 === $status ) {
+			return 'config';
+		}
+		// The server read the request and refused it: sending it again
+		// gets the same answer. A conflict may clear on a new run.
+		if ( $status >= 400 && $status < 500 && ! in_array( $status, array( 408, 409, 429 ), true ) ) {
+			return 'other';
+		}
+		return 'storage';
+	}
+
+	/**
+	 * What to say of a server's refusal: its own words, and for a refused
+	 * token what to do about it.
+	 */
+	public static function refusal_text( WP_Error $e ) {
+		$text = $e->get_error_message();
+		if ( 401 === (int) ( $e->get_error_data()['status'] ?? 0 ) ) {
+			$text = rtrim( $text, '.' ) . '. SafeGrd no longer accepts this site\'s token: it was replaced, or the site removed, in the console. Connect the site again under Tools, SafeGrd.';
+		}
+		return $text;
+	}
+
+	/**
 	 * PUTs bytes to a presigned URL, with the headers it was signed with.
 	 *
 	 * @return true|WP_Error

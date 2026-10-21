@@ -534,12 +534,12 @@ final class SafeGrd_Repo_Client {
 			}
 			$status = (int) ( $r->get_error_data()['status'] ?? 0 );
 			$busy   = 429 === $status && false === strpos( $r->get_error_message(), 'backups to hosted storage' );
-			if ( ( $busy || $status >= 500 || 0 === $status ) && $attempt < 4 ) {
+			// 507 is a full quota: waiting does not free it.
+			if ( ( $busy || ( $status >= 500 && 507 !== $status ) || 0 === $status ) && $attempt < 4 ) {
 				sleep( 2 * ( $attempt + 1 ) );
 				continue;
 			}
-			$reason = ( 402 === $status || 507 === $status ) ? 'quota' : 'storage';
-			throw new SafeGrd_Exception( esc_html( 'Storage: ' . $r->get_error_message() ), esc_html( $reason ) );
+			throw new SafeGrd_Exception( esc_html( 'Storage: ' . SafeGrd_Client::refusal_text( $r ) ), esc_html( SafeGrd_Client::reason_of( $r ) ) );
 		}
 	}
 
