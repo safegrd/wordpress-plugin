@@ -460,7 +460,9 @@ final class SafeGrd_Backup {
 	}
 
 	public function write( $bytes ) {
-		hash_update( $this->file['hash'], $bytes );
+		if ( null !== $this->file['hash'] ) {
+			hash_update( $this->file['hash'], $bytes );
+		}
 		$this->file['size']   += strlen( $bytes );
 		$this->file['buffer'] .= $bytes;
 		while ( strlen( $this->file['buffer'] ) >= SafeGrd_Repo_Format::CHUNK ) {
@@ -469,7 +471,12 @@ final class SafeGrd_Backup {
 		}
 	}
 
-	public function end_file() {
+	/**
+	 * @param string $full The file on disk, read again for its SHA-256 when
+	 *                     the hash could not be carried over from an earlier
+	 *                     slice (PHP before 8.0).
+	 */
+	public function end_file( $full = '' ) {
 		if ( '' !== $this->file['buffer'] ) {
 			$this->store_chunk( $this->file['buffer'] );
 		}
@@ -479,7 +486,7 @@ final class SafeGrd_Backup {
 			'mtime'   => $this->file['mtime'],
 			'inode'   => $this->file['inode'],
 			'mode'    => $this->file['mode'],
-			'sha256'  => hash_final( $this->file['hash'] ),
+			'sha256'  => null === $this->file['hash'] ? (string) hash_file( 'sha256', $full ) : hash_final( $this->file['hash'] ),
 			'content' => $this->file['content'],
 		);
 		$this->job['logical'] += $this->file['size'];
@@ -753,12 +760,43 @@ final class SafeGrd_Backup {
 				$this->job['cursor']    = $rel;
 				return true;
 			}
-			if ( $size >= self::LARGE_FILE ) {
-				update_option( self::DOING, sprintf( 'reading %s (%s), which has to be read in one request', substr( $rel, 6 ), size_format( $size, 1 ) ), false );
-			}
 			$this->begin_file( $rel, $mode, $mtime, $inode );
-			$left = $size;
+			$left    = $size;
+			$partial = $this->job['partial'] ?? null;
+			unset( $this->job['partial'] );
+			if ( is_array( $partial ) && $partial['path'] === $rel && (int) $partial['size'] === $size && (int) $partial['mtime'] === $mtime && (int) $partial['inode'] === $inode && 0 === fseek( $fh, (int) $partial['offset'] ) ) {
+				// An earlier slice stored this file up to offset: go on from
+				// there. Its chunks are stored, and its hash goes on from the
+				// state that slice saved, or is read again at the end.
+				$this->file['size']    = (int) $partial['offset'];
+				$this->file['content'] = $partial['content'];
+				$this->file['hash']    = self::hash_thaw( $partial['hash'] );
+				$left                 -= (int) $partial['offset'];
+			}
+			$from = $left;
+			if ( $size >= self::LARGE_FILE ) {
+				update_option( self::DOING, sprintf( 'reading %s (%s) from %s on', substr( $rel, 6 ), size_format( $size, 1 ), size_format( $size - $left, 1 ) ), false );
+			}
 			while ( $left > 0 ) {
+				// A large file is stored a chunk at a time and may be left
+				// part way, at a chunk's end, for the next slice to finish.
+				if ( $size >= self::LARGE_FILE && '' === $this->file['buffer'] && $left < $from && $this->out_of_time() ) {
+					$this->checkpoint();
+					$this->job['partial'] = array(
+						'path'    => $rel,
+						'size'    => $size,
+						'mtime'   => $mtime,
+						'inode'   => $inode,
+						'offset'  => $this->file['size'],
+						'content' => $this->file['content'],
+						'hash'    => self::hash_freeze( $this->file['hash'] ),
+					);
+					$this->save_job();
+					fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+					$this->file = null;
+					$this->say( sprintf( 'Stored %s of %s, %s; the next slice goes on from there', size_format( $size - $left, 1 ), substr( $rel, 6 ), size_format( $size, 1 ) ) );
+					return false;
+				}
 				$buf = fread( $fh, min( self::READ_BYTES, $left ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread
 				if ( false === $buf || '' === $buf ) {
 					// Shorter than it was a moment ago: what was read is what
@@ -770,7 +808,7 @@ final class SafeGrd_Backup {
 				$left -= strlen( $buf );
 			}
 			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
-			$this->end_file();
+			$this->end_file( $full );
 			if ( $size >= self::LARGE_FILE ) {
 				delete_option( self::DOING );
 			}
@@ -786,6 +824,26 @@ final class SafeGrd_Backup {
 		 */
 		do_action( 'safegrd_file_stored', $rel );
 		return true;
+	}
+
+	/**
+	 * A hash under way, as text a slice can save; hash_thaw() takes it back.
+	 * PHP before 8.0 cannot serialize one: then null, and the file is read
+	 * again for its hash.
+	 */
+	public static function hash_freeze( $ctx ) {
+		if ( null === $ctx || PHP_VERSION_ID < 80000 ) {
+			return null;
+		}
+		return base64_encode( serialize( $ctx ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize,WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- a HashContext, saved between slices.
+	}
+
+	public static function hash_thaw( $saved ) {
+		if ( ! is_string( $saved ) || '' === $saved ) {
+			return null;
+		}
+		$ctx = unserialize( base64_decode( $saved ), array( 'allowed_classes' => array( 'HashContext' ) ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize,WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- the HashContext an earlier slice saved, and nothing else.
+		return $ctx instanceof HashContext ? $ctx : null;
 	}
 
 	// --- finishing --------------------------------------------------------
@@ -1316,7 +1374,7 @@ final class SafeGrd_Backup {
 	 * @throws SafeGrd_Exception When the run has to fail.
 	 */
 	private function note_death() {
-		$at = $this->job['stage'] . '|' . (string) $this->job['cursor'] . '|' . ( empty( $this->job['finishing'] ) ? '' : 'finish' );
+		$at = $this->job['stage'] . '|' . (string) $this->job['cursor'] . '|' . (string) ( $this->job['partial']['offset'] ?? '' ) . '|' . ( empty( $this->job['finishing'] ) ? '' : 'finish' );
 		if ( ( $this->job['died_at'] ?? '' ) === $at ) {
 			$this->job['deaths'] = (int) ( $this->job['deaths'] ?? 0 ) + 1;
 		} else {

@@ -164,10 +164,14 @@ and starts the next with a request to the site itself. A WP-Cron event a minute 
 it. A host that stops a request stops one slice, and the next resumes from the last saved point.
 Nothing secret is saved between slices: each pack is sealed and uploaded before its slice ends.
 
-Two things still have to fit in one slice's request: the database dump, so that it stays one
-consistent snapshot, and the largest single file. A slice the host stops starts again from the
-last saved point. Stopped three times at the same point, the run is recorded as failed, naming
-the dump or the file. Run it from the server's cron instead, where PHP has no time limit:
+A file larger than one slice can read, such as a video, is stored 4 MiB at a time across as many
+slices as it needs. On a host that stops requests at 30 seconds, a 2 GB file backs up this way.
+
+The database dump still has to fit in one request, so that it stays one consistent snapshot. On a
+host that stops requests at 30 seconds that holds a dump of about 1 GB, depending on the host's
+speed. A slice the host stops starts again from the last saved point. Stopped three times at the
+same point, the run is recorded as failed, naming what it was doing. Run it from the server's
+cron instead, where PHP has no time limit:
 
 ```
 17 3 * * * cd /var/www/html && wp safegrd backup --quiet

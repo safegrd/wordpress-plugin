@@ -248,9 +248,14 @@ final class SafeGrd_Scheduler {
 	 * @return bool Whether it was queued.
 	 */
 	public static function backup_now() {
-		if ( SafeGrd_Backup::running() || wp_next_scheduled( self::NOW_HOOK ) ) {
+		// Asked in the last few minutes and not started yet: queued. Older,
+		// it was refused before it started, and asking again is allowed.
+		if ( SafeGrd_Backup::running() || (int) get_option( SafeGrd_Backup::REQUESTED, 0 ) > time() - 5 * MINUTE_IN_SECONDS ) {
 			return false;
 		}
+		// The event of an earlier Back up now that the loopback already
+		// ran: it would start nothing, and must not refuse this one.
+		wp_clear_scheduled_hook( self::NOW_HOOK );
 		update_option( SafeGrd_Backup::REQUESTED, time(), false );
 		wp_schedule_single_event( time() + MINUTE_IN_SECONDS, self::NOW_HOOK );
 		self::kick();
