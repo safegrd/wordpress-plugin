@@ -32,6 +32,8 @@ final class SafeGrd_Restore {
 	const OUT_BUFFER = 8388608;
 	/** Rows of a table rewritten per query when the site URL changes. */
 	const URL_BATCH = 200;
+	/** Bytes of files fetched ahead of writing them, at most. */
+	const PREFETCH_BYTES = 25165824;
 	/** The mode of files the plugin writes beside the site's own. */
 	const FILE_MODE = 0644;
 
@@ -398,7 +400,7 @@ final class SafeGrd_Restore {
 	 * @throws SafeGrd_Exception When the restore has to fail.
 	 */
 	private function note_death() {
-		$at = implode( '|', array( $this->job['stage'], (int) $this->job['part'], (int) $this->job['seq'], (int) $this->job['table'] ) );
+		$at = implode( '|', array( $this->job['stage'], (int) $this->job['part'], (int) $this->job['seq'], (int) $this->job['table'], (int) ( $this->job['partial']['blobs'] ?? 0 ) ) );
 		if ( ( $this->job['died_at'] ?? '' ) === $at ) {
 			$this->job['deaths'] = (int) ( $this->job['deaths'] ?? 0 ) + 1;
 		} else {
@@ -1494,18 +1496,46 @@ final class SafeGrd_Restore {
 				}
 				unset( $data );
 			} else {
-				// Larger than this request may hold: one blob at a time.
-				$fh = SafeGrd_Stream::create( $dst );
+				// Larger than this request may hold: one blob at a time, and
+				// across slices when it takes longer than one. An earlier
+				// slice's part stays, cut back to what it saved.
+				$from    = 0;
+				$partial = $this->job['partial'] ?? null;
+				unset( $this->job['partial'] );
+				if ( is_array( $partial ) && (int) $partial['seq'] === (int) $this->job['seq'] && self::fs()->exists( $dst ) ) {
+					SafeGrd_Stream::cut( $dst, (int) $partial['bytes'] );
+					$fh   = SafeGrd_Stream::append( $dst );
+					$h    = SafeGrd_Backup::hash_thaw( $partial['hash'] );
+					$from = (int) $partial['blobs'];
+				} else {
+					$fh = SafeGrd_Stream::create( $dst );
+				}
 				try {
-					foreach ( $ids as $id ) {
-						$chunk = $this->reader->blob( $id );
-						hash_update( $h, $chunk );
+					for ( $i = $from; $i < count( $ids ); $i++ ) {
+						if ( $i > $from && $this->out_of_time() ) {
+							$this->job['partial'] = array(
+								'seq'   => (int) $this->job['seq'],
+								'blobs' => $i,
+								'bytes' => $fh->written(),
+								'hash'  => SafeGrd_Backup::hash_freeze( $h ),
+							);
+							$this->say( sprintf( 'Wrote %d of %d parts of %s; the next slice goes on from there', $i, count( $ids ), substr( $row['path'], 6 ) ) );
+							return false;
+						}
+						if ( 0 === ( $i - $from ) % 6 ) {
+							$deadline = $this->deadline > 0 ? microtime( true ) + ( $this->deadline - microtime( true ) ) / 2 : 0;
+							$this->reader->prefetch( array_slice( $ids, $i, 6 ), $deadline );
+						}
+						$chunk = $this->reader->blob( $ids[ $i ] );
+						if ( null !== $h ) {
+							hash_update( $h, $chunk );
+						}
 						$fh->write( $chunk );
 					}
 				} finally {
 					$fh->close();
 				}
-				if ( hash_final( $h ) !== $row['sha256'] ) {
+				if ( ( null === $h ? hash_file( 'sha256', $dst ) : hash_final( $h ) ) !== $row['sha256'] ) {
 					throw new SafeGrd_Exception( esc_html( $row['path'] . ' does not match its SHA-256. Nothing was restored.' ), 'other' );
 				}
 				self::fs()->chmod( $dst, $mode ); // a mode the host refuses is not worth failing for
@@ -1527,8 +1557,18 @@ final class SafeGrd_Restore {
 		$ids   = array();
 		$bytes = 0;
 		$end   = $seq;
-		for ( ; $end < $last && $end - $seq < 300 && $bytes < 25165824; $end++ ) {
+		for ( ; $end < $last && $end - $seq < 300 && $bytes < self::PREFETCH_BYTES; $end++ ) {
 			$row = $this->row( $end );
+			if ( (int) $row['size'] > self::PREFETCH_BYTES ) {
+				// A file larger than one fetch ahead is fetched as it is
+				// written, a few blobs at a time (write_files()): fetched
+				// here whole, it filled the memory of the request.
+				if ( $end > $seq ) {
+					break;
+				}
+				$end++;
+				break;
+			}
 			if ( '' !== $row['content'] ) {
 				$ids = array_merge( $ids, explode( ',', $row['content'] ) );
 			}
