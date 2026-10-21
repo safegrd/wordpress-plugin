@@ -30,6 +30,7 @@ final class SafeGrd_Admin {
 		add_action( 'wp_ajax_safegrd_disconnect', array( __CLASS__, 'ajax_disconnect' ) );
 		add_action( 'wp_ajax_safegrd_restore_list', array( __CLASS__, 'ajax_restore_list' ) );
 		add_action( 'wp_ajax_safegrd_restore_items', array( __CLASS__, 'ajax_restore_items' ) );
+		add_action( 'wp_ajax_safegrd_restore_key', array( __CLASS__, 'ajax_restore_key' ) );
 		add_action( 'wp_ajax_safegrd_restore_start', array( __CLASS__, 'ajax_restore_start' ) );
 		add_action( 'wp_ajax_safegrd_restore_delete_copy', array( __CLASS__, 'ajax_restore_delete_copy' ) );
 		add_action( 'wp_ajax_safegrd_restore_undo', array( __CLASS__, 'ajax_restore_undo' ) );
@@ -310,7 +311,7 @@ final class SafeGrd_Admin {
 					<summary>Moving a site to a new host or domain</summary>
 					<p class="description">Install WordPress and this plugin on the new host, connect it to the same SafeGrd account, then choose <em>All sites</em> above and restore the old site's backup with its database. The restore replaces the old address with the new one in the database, serialized data included, and renames the tables to this site's table prefix. <code>wp-config.php</code> stays this site's own.</p>
 				</details>
-				<p class="description">A backup taken with a customer-managed key restores and downloads with the safegrd command line tool and that key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
+				<p class="description">To restore a backup taken with a customer-managed key, open it and paste the key. The safegrd command line tool restores it too, with the key file. <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/docs/surfaces/wordpress#restore' ); ?>" target="_blank" rel="noopener">How to restore</a>.</p>
 			</div>
 			<div class="safegrd-card">
 				<h2>Downloads</h2>
@@ -895,12 +896,34 @@ final class SafeGrd_Admin {
 	 * What a backup holds, for the picker: its plugins and themes with their
 	 * versions beside this site's, and its tables.
 	 */
+	/**
+	 * A customer-managed key pasted for one backup: held, sealed, until its
+	 * restore ends, once it opens that backup.
+	 */
+	public static function ajax_restore_key() {
+		self::guard();
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
+		$id  = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : '';
+		$key = isset( $_POST['key'] ) ? sanitize_textarea_field( wp_unslash( $_POST['key'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		$ok = SafeGrd_Restore::hold_key( $id, $key );
+		if ( is_wp_error( $ok ) ) {
+			wp_send_json_error( array( 'message' => $ok->get_error_message() ) );
+		}
+		wp_send_json_success( array( 'message' => 'The key opens this backup.' ) );
+	}
+
 	public static function ajax_restore_items() {
 		self::guard();
 		$id  = isset( $_POST['snapshot'] ) ? sanitize_text_field( wp_unslash( $_POST['snapshot'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- self::guard() checked the nonce.
 		$out = SafeGrd_Restore::contents( $id );
 		if ( is_wp_error( $out ) ) {
-			wp_send_json_error( array( 'message' => $out->get_error_message() ) );
+			wp_send_json_error(
+				array(
+					'message'   => $out->get_error_message(),
+					'needs_key' => false !== strpos( $out->get_error_message(), SafeGrd_Restore::NEEDS_KEY ),
+				)
+			);
 		}
 		foreach ( $out['tables'] as &$t ) {
 			$t['size'] = size_format( $t['bytes'], 1 );

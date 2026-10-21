@@ -147,7 +147,13 @@ wp safegrd download snap-... database --tables=wp_posts --to=posts.sql.gz
 wp safegrd download snap-... plugins --plugins=akismet --to=akismet.tar.gz
 ```
 
-The plugin restores backups taken with a SafeGrd-managed key. For a customer-managed key, use the
+A backup taken with a customer-managed key restores the same way once you give its key: open it
+under *Restore & download* and paste the key, or pass `--key=file:/path/to/key` (or `env:VAR`) to
+`wp safegrd restore`, `download` or `contents`. The site checks the key opens the backup, keeps it
+sealed with the site's own salts until the restore swaps in, or for an hour if none starts, and
+then deletes it. It is never in a backup.
+
+To restore onto a server without WordPress, use the
 [safegrd CLI](https://safegrd.dev/docs/install) on a machine signed in to the same account:
 
 ```sh

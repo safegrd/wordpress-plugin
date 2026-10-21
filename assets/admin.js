@@ -13,7 +13,9 @@
 			.then(function (r) { return r.json().catch(function () { return { success: false, data: { message: "The site answered HTTP " + r.status + "." } }; }); })
 			.then(function (j) {
 				if (!j || !j.success) {
-					throw new Error((j && j.data && j.data.message) || "The request failed.");
+					var err = new Error((j && j.data && j.data.message) || "The request failed.");
+					err.data = (j && j.data) || {};
+					throw err;
 				}
 				return j.data;
 			});
@@ -557,9 +559,49 @@
 			renderPanel();
 		}).catch(function (e) {
 			if (opened !== s) return;
-			pick.error = e.message;
+			if (e.data && e.data.needs_key) {
+				pick.needsKey = true;
+			} else {
+				pick.error = e.message;
+			}
 			renderPanel();
 		});
+	}
+
+	// A backup taken with a customer-managed key: the key is pasted, checked
+	// against the backup, and held by the site until the restore ends.
+	function renderKeyForm() {
+		var box = el("div", "safegrd-key");
+		box.appendChild(el("p", "", "This backup was taken with a customer-managed key, which SafeGrd does not hold. Paste the key to restore it."));
+		var label = el("label", "", "Key");
+		label.setAttribute("for", "safegrd-key-text");
+		box.appendChild(label);
+		var text = el("textarea", "large-text code");
+		text.id = "safegrd-key-text";
+		text.rows = 2;
+		text.setAttribute("autocomplete", "off");
+		text.setAttribute("spellcheck", "false");
+		text.placeholder = "AGE-SECRET-KEY-1...";
+		box.appendChild(text);
+		box.appendChild(el("p", "description", "This site keeps the key sealed until the restore ends, or for an hour if no restore starts, then deletes it."));
+		var p = el("p");
+		var use = el("button", "button button-primary", "Use this key");
+		use.type = "button";
+		use.id = "safegrd-key-btn";
+		use.addEventListener("click", function () {
+			use.disabled = true;
+			var s = opened;
+			post("safegrd_restore_key", { snapshot: s.id, key: text.value }).then(function () {
+				text.value = "";
+				if (opened === s) openBackup(s);
+			}).catch(function (e) {
+				use.disabled = false;
+				notice("error", e.message);
+			});
+		});
+		p.appendChild(use);
+		box.appendChild(p);
+		return box;
 	}
 
 	function closeBackup() {
@@ -663,6 +705,10 @@
 			if (f) facts.appendChild(el("span", "", f));
 		});
 		panel.appendChild(facts);
+		if (pick.needsKey) {
+			panel.appendChild(renderKeyForm());
+			return;
+		}
 		if (!c && !pick.error) {
 			panel.appendChild(el("p", "description safegrd-loading", "Reading what this backup holds from storage. The first time takes a few seconds."));
 		}

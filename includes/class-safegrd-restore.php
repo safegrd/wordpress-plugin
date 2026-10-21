@@ -32,6 +32,13 @@ final class SafeGrd_Restore {
 	const OUT_BUFFER = 8388608;
 	/** Rows of a table rewritten per query when the site URL changes. */
 	const URL_BATCH = 200;
+	/**
+	 * A customer-managed key pasted to restore one backup: sealed with this
+	 * site's own salts, kept until that restore ends, or an hour when none
+	 * starts. Never in a backup: the dump leaves safegrd_ options out.
+	 */
+	const HELD_KEY = 'safegrd_restore_key';
+	const HELD_KEY_TTL = HOUR_IN_SECONDS;
 	/** Bytes of files fetched ahead of writing them, at most. */
 	const PREFETCH_BYTES = 25165824;
 	/** The mode of files the plugin writes beside the site's own. */
@@ -442,13 +449,105 @@ final class SafeGrd_Restore {
 
 	// --- plan ---------------------------------------------------------------
 
+	/** Said when SafeGrd holds no key for a backup; the Tools page asks for the key on it. */
+	const NEEDS_KEY = 'This backup was taken with a customer-managed key, which SafeGrd does not hold. Open it under Tools, SafeGrd, Restore and paste the key, or pass --key to wp safegrd restore.';
+
+	/** A key given for this request only (hold_key() checking it), else ''. */
+	private $key = '';
+
+	/**
+	 * Holds a customer-managed key for restoring one backup, once it opens
+	 * that backup.
+	 *
+	 * @param string $snapshot_id The backup.
+	 * @param string $text        The key, or a key file's text: the AGE-SECRET-KEY-1 line is taken.
+	 * @return true|WP_Error
+	 */
+	public static function hold_key( $snapshot_id, $text ) {
+		if ( ! preg_match( '/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/', (string) $snapshot_id ) ) {
+			return new WP_Error( 'safegrd_restore', 'That is not a snapshot id.' );
+		}
+		if ( ! preg_match( '/AGE-SECRET-KEY-1[0-9A-Z]+/', strtoupper( (string) $text ), $m ) ) {
+			return new WP_Error( 'safegrd_restore', 'That is not an age key. The key starts AGE-SECRET-KEY-1.' );
+		}
+		try {
+			list( $hrp, $secret ) = SafeGrd_Bech32::decode( $m[0] );
+			if ( 'age-secret-key-' !== $hrp || 32 !== strlen( $secret ) ) {
+				throw new InvalidArgumentException( 'not an X25519 identity' );
+			}
+		} catch ( InvalidArgumentException $e ) {
+			return new WP_Error( 'safegrd_restore', 'That is not an age key: ' . $e->getMessage() . '.' );
+		}
+		try {
+			$check         = new self();
+			$check->client = SafeGrd_Client::for_site();
+			$check->job    = array( 'snapshot_id' => $snapshot_id );
+			$check->key    = $m[0];
+			$check->open_snapshot( true );
+		} catch ( Throwable $e ) {
+			return new WP_Error( 'safegrd_restore', sprintf( 'This key does not open %s: %s', $snapshot_id, SafeGrd_Exception::text( $e ) ) );
+		}
+		$nonce = random_bytes( SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
+		update_option(
+			self::HELD_KEY,
+			array(
+				'snapshot_id' => $snapshot_id,
+				'sealed'      => base64_encode( $nonce . sodium_crypto_secretbox( $m[0], $nonce, self::key_seal() ) ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- sealed bytes stored as text.
+				'until'       => time() + self::HELD_KEY_TTL,
+			),
+			false
+		);
+		return true;
+	}
+
+	/** Whether a key is held for this backup. */
+	public static function holds_key( $snapshot_id ) {
+		return '' !== self::held_key( $snapshot_id );
+	}
+
+	/** The held key of this backup, or '' when none is, or it lapsed. */
+	private static function held_key( $snapshot_id ) {
+		$held = get_option( self::HELD_KEY, null );
+		if ( ! is_array( $held ) || ( $held['snapshot_id'] ?? '' ) !== $snapshot_id ) {
+			return '';
+		}
+		$job = self::job();
+		if ( (int) ( $held['until'] ?? 0 ) < time() && ! ( $job && $job['snapshot_id'] === $snapshot_id ) ) {
+			self::forget_key();
+			return '';
+		}
+		$raw = base64_decode( (string) $held['sealed'], true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- sealed bytes stored as text.
+		if ( false === $raw || strlen( $raw ) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES ) {
+			return '';
+		}
+		$key = sodium_crypto_secretbox_open( substr( $raw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES ), substr( $raw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES ), self::key_seal() );
+		return false === $key ? '' : $key;
+	}
+
+	/** Deletes a held key: the restore it was for has ended. */
+	public static function forget_key() {
+		delete_option( self::HELD_KEY );
+	}
+
+	/** The key a held key is sealed with, from this site's salts in wp-config.php. */
+	private static function key_seal() {
+		return sodium_crypto_generichash( wp_salt( 'auth' ) . '|safegrd-restore-key', '', SODIUM_CRYPTO_SECRETBOX_KEYBYTES );
+	}
+
 	/** The key SafeGrd releases for the snapshot, to this site's token. Never stored. */
 	private function identity() {
+		if ( '' !== $this->key ) {
+			return $this->key;
+		}
+		$held = self::held_key( $this->job['snapshot_id'] );
+		if ( '' !== $held ) {
+			return $held;
+		}
 		$r = $this->client->call( 'GET', '/api/v1/nodes/' . rawurlencode( SafeGrd_Settings::get( 'node_id' ) ) . '/identity?snapshot=' . rawurlencode( $this->job['snapshot_id'] ), null, 30 );
 		if ( is_wp_error( $r ) ) {
 			$status = (int) ( $r->get_error_data()['status'] ?? 0 );
 			if ( 404 === $status ) {
-				throw new SafeGrd_Exception( esc_html( 'SafeGrd does not hold the key of this backup: it was taken with a customer-managed key. Restore it with the safegrd command line tool and that key file.' ), 'other' );
+				throw new SafeGrd_Exception( esc_html( self::NEEDS_KEY ), 'other' );
 			}
 			throw new SafeGrd_Exception( esc_html( 'SafeGrd did not release the key of this backup: ' . $r->get_error_message() ), 'storage' );
 		}
@@ -1610,6 +1709,9 @@ final class SafeGrd_Restore {
 
 		if ( 'swap' === $this->job['stage'] ) {
 			$this->say( 'Swapping the restored site in' );
+			// Everything is read: a key held for this restore goes now, so
+			// the options table set aside by the swap does not keep it.
+			self::forget_key();
 			// Before anything changes: every directory the swap moves must be one
 			// PHP can move. One it cannot would stop the swap half way.
 			$this->check_movable( $content );
@@ -1863,6 +1965,7 @@ final class SafeGrd_Restore {
 			}
 		}
 		delete_option( self::JOB );
+		self::forget_key();
 		delete_option( self::FAILED );
 		update_option( self::LAST, $last, false );
 		self::drop_tables();
@@ -2080,6 +2183,7 @@ final class SafeGrd_Restore {
 		update_option( self::DOWNLOADS, $downloads, false );
 		wp_schedule_single_event( time() + self::DOWNLOAD_TTL + 60, 'safegrd_expire_downloads' );
 		delete_option( self::JOB );
+		self::forget_key();
 		self::drop_tables();
 		$this->say( sprintf( 'Ready: %s, %s. It is deleted from this server %s.', $this->job['out_name'], size_format( (int) filesize( $path ), 1 ), wp_date( 'Y-m-d H:i', time() + self::DOWNLOAD_TTL ) ) );
 		SafeGrd_Log::finish( 'restore-' . $this->job['id'], 'download', $this->job['snapshot_id'], 'ready' );
@@ -2178,6 +2282,7 @@ final class SafeGrd_Restore {
 			SafeGrd_Log::finish( 'restore-' . $job['id'], $download ? 'download' : 'restore', $job['snapshot_id'], 'failed' );
 		}
 		delete_option( self::JOB );
+		self::forget_key();
 		if ( $download ) {
 			SafeGrd_Scheduler::continue_cancel();
 			self::rmdir( self::downloads_dir() . '/' . $job['out_dir'] );

@@ -270,6 +270,9 @@ final class SafeGrd_CLI {
 	 * [--tables=<names>]
 	 * : Restore only these tables, comma-separated, with or without the table prefix (wp_posts or posts). The users table brings the backup's users.
 	 *
+	 * [--key=<key>]
+	 * : The customer-managed key of a backup SafeGrd does not hold: file:/path to the key file, or env:VAR. The site keeps it sealed until the restore ends.
+	 *
 	 * [--yes]
 	 * : Do not ask for confirmation.
 	 *
@@ -328,6 +331,7 @@ final class SafeGrd_CLI {
 			$parts = SafeGrd_Restore::describe_parts( null === $only ? ( $items ? array_keys( $items ) : SafeGrd_Site::COMPONENTS ) : array_values( array_unique( array_merge( $only, array_keys( $items ) ) ) ), $items );
 			$what  = '' === $parts ? 'This site\'s database and content directory are replaced.' : sprintf( 'This site\'s %s are replaced.', $parts );
 			WP_CLI::confirm( sprintf( 'Restore %s onto %s? %s The current ones are kept aside.', $args[0], home_url(), $what ), $assoc );
+			self::hold_key( $args[0], $assoc );
 			$ok = SafeGrd_Restore::begin( $args[0], $only, 'restore', $items );
 			if ( is_wp_error( $ok ) ) {
 				WP_CLI::error( $ok->get_error_message() );
@@ -386,6 +390,9 @@ final class SafeGrd_CLI {
 	 * [--tables=<names>]
 	 * : With database: only these tables, comma-separated, with or without the table prefix.
 	 *
+	 * [--key=<key>]
+	 * : The customer-managed key of a backup SafeGrd does not hold: file:/path to the key file, or env:VAR. The site keeps it sealed until the restore ends.
+	 *
 	 * [--to=<file>]
 	 * : Copy the download here. Without it, the file stays on the server for a day and its path is printed.
 	 *
@@ -396,6 +403,7 @@ final class SafeGrd_CLI {
 	 */
 	public function download( $args, $assoc ) {
 		if ( ! SafeGrd_Restore::job() ) {
+			self::hold_key( $args[0], $assoc );
 			$ok = SafeGrd_Restore::begin( $args[0], array( $args[1] ), 'download', self::items( $assoc, false ) );
 			if ( is_wp_error( $ok ) ) {
 				WP_CLI::error( $ok->get_error_message() );
@@ -435,12 +443,45 @@ final class SafeGrd_CLI {
 	}
 
 	/**
+	 * Holds the key --key names for this backup, when it names one.
+	 *
+	 * @param string $snapshot_id The backup.
+	 * @param array  $assoc       The command's options.
+	 */
+	private static function hold_key( $snapshot_id, array $assoc ) {
+		if ( empty( $assoc['key'] ) ) {
+			return;
+		}
+		$ref = (string) $assoc['key'];
+		if ( 0 === strpos( $ref, 'env:' ) ) {
+			$text = (string) getenv( substr( $ref, 4 ) );
+			if ( '' === $text ) {
+				WP_CLI::error( sprintf( '%s is empty or not set.', substr( $ref, 4 ) ) );
+			}
+		} elseif ( 0 === strpos( $ref, 'file:' ) ) {
+			$text = SafeGrd_Restore::fs()->get_contents( substr( $ref, 5 ) );
+			if ( false === $text ) {
+				WP_CLI::error( sprintf( 'Could not read %s.', substr( $ref, 5 ) ) );
+			}
+		} else {
+			WP_CLI::error( '--key takes file:/path to the key file or env:VAR, so the key does not land in your shell history.' );
+		}
+		$ok = SafeGrd_Restore::hold_key( $snapshot_id, $text );
+		if ( is_wp_error( $ok ) ) {
+			WP_CLI::error( $ok->get_error_message() );
+		}
+	}
+
+	/**
 	 * Lists the plugins, themes and tables a backup holds, with the version of each plugin and theme installed here.
 	 *
 	 * ## OPTIONS
 	 *
 	 * <snapshot>
 	 * : The backup, from wp safegrd snapshots.
+	 *
+	 * [--key=<key>]
+	 * : The customer-managed key of a backup SafeGrd does not hold: file:/path to the key file, or env:VAR. The site keeps it sealed until the restore ends.
 	 *
 	 * [--format=<format>]
 	 * : table or json.
@@ -451,6 +492,7 @@ final class SafeGrd_CLI {
 	 * @when after_wp_load
 	 */
 	public function contents( $args, $assoc ) {
+		self::hold_key( $args[0], $assoc );
 		$c = SafeGrd_Restore::contents( $args[0] );
 		if ( is_wp_error( $c ) ) {
 			WP_CLI::error( $c->get_error_message() );
