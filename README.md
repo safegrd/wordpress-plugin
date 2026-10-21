@@ -165,7 +165,8 @@ it. A host that stops a request stops one slice, and the next resumes from the l
 Nothing secret is saved between slices: each pack is sealed and uploaded before its slice ends.
 
 A file larger than one slice can read, such as a video, is stored 4 MiB at a time across as many
-slices as it needs. On a host that stops requests at 30 seconds, a 2 GB file backs up this way.
+slices as it needs. On a host that stops requests at 30 seconds, a 2 GB file backs up this way,
+and a restore writes it back the same way.
 
 The database dump still has to fit in one request, so that it stays one consistent snapshot. On a
 host that stops requests at 30 seconds that holds a dump of about 1 GB, depending on the host's
