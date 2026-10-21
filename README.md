@@ -175,8 +175,8 @@ slices as it needs. On a host that stops requests at 30 seconds, a 2 GB file bac
 and a restore writes it back the same way.
 
 The database dump still has to fit in one request, so that it stays one consistent snapshot. On a
-host that stops requests at 30 seconds that holds a dump of about 1 GB, depending on the host's
-speed. A slice the host stops starts again from the last saved point. Stopped three times at the
+host that stops requests at 30 seconds, a dump of about 1 GB fit only on a fast machine with
+MySQL's cache warm; a larger database, or a slower host, needs the server's cron. A slice the host stops starts again from the last saved point. Stopped three times at the
 same point, the run is recorded as failed, naming what it was doing. Run it from the server's
 cron instead, where PHP has no time limit:
 
