@@ -6,12 +6,17 @@
  * binary values as hex, and "-- Dump completed" as the last line.
  *
  * The dump is files of the run: mysql/dump.sql holds the header, each table
- * is a part of its own (mysql/dump.sql.1, .2, ...), and the last part holds
- * the footer. A table whose rows did not change is the same bytes as last
+ * is a part of its own (mysql/dump.sql.1, .2, ...), or several when it is
+ * read across requests, and the last part holds the footer. Readers join the
+ * parts in order. A table whose rows did not change is the same bytes as last
  * time, so it uploads nothing.
  *
  * Every table is read inside one consistent snapshot (InnoDB), with an
- * unbuffered query, so memory does not grow with the table.
+ * unbuffered query, so memory does not grow with the table. When the host
+ * stops a request before the whole dump is read, run_split() reads it table
+ * by table across requests instead: each request in a consistent snapshot of
+ * its own, a large table in pages by its primary key, and each part ending at
+ * the end of a statement, so every part is whole when its request ends.
  *
  * @package SafeGrd
  */
@@ -21,6 +26,8 @@ defined( 'ABSPATH' ) || exit;
 final class SafeGrd_Dumper {
 	/** One INSERT statement grows to about this many bytes. */
 	const STATEMENT_BYTES = 1048576;
+	/** Rows in one page of a table read across requests, at first. */
+	const PAGE_ROWS = 2000;
 	/** @var mysqli */
 	private $db;
 	/** @var SafeGrd_Backup */
@@ -102,14 +109,7 @@ final class SafeGrd_Dumper {
 			$names = $this->table_names();
 			$sizes = $this->table_sizes();
 			$this->next_part();
-			$this->emit( "-- SafeGrd WordPress dump\n" );
-			$this->emit( '-- Database: ' . $this->database . "\n" );
-			$this->emit( '-- Server version: ' . $this->server_version . "\n\n" );
-			$this->emit( '/*!40101 SET NAMES ' . $this->charset . " */;\n" );
-			$this->emit( "/*!40103 SET TIME_ZONE='+00:00' */;\n" );
-			$this->emit( "/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;\n" );
-			$this->emit( "/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n" );
-			$this->emit( "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n\n" );
+			$this->header();
 			foreach ( $names as $name ) {
 				$this->next_part();
 				$rows                  = $this->dump_table( $name );
@@ -118,14 +118,9 @@ final class SafeGrd_Dumper {
 					'size' => isset( $sizes[ $name ] ) ? $sizes[ $name ] : 0,
 				);
 			}
-			$this->attachments = (int) $this->scalar(
-				'SELECT COUNT(*) FROM ' . $this->quote_name( $this->prefix . 'postmeta' ) . " WHERE meta_key = '_wp_attached_file'"
-			);
+			$this->attachments = $this->attachments();
 			$this->next_part();
-			$this->emit( "/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n" );
-			$this->emit( "/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n" );
-			$this->emit( "/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;\n\n" );
-			$this->emit( "-- Dump completed\n" );
+			$this->footer();
 			$this->out->end_file();
 		} finally {
 			$this->db->query( 'COMMIT' );
@@ -137,6 +132,199 @@ final class SafeGrd_Dumper {
 			'tables'         => $this->tables,
 			'skipped'        => $this->skipped,
 			'attachments'    => $this->attachments,
+		);
+	}
+
+	/**
+	 * A dump to be read table by table across requests, from the start.
+	 *
+	 * @return array The state run_split() takes and returns.
+	 */
+	public static function split_state() {
+		return array(
+			'mode'    => 'split',
+			'part'    => 0,
+			'names'   => null,
+			'sizes'   => array(),
+			'i'       => 0,
+			'table'   => null,
+			'batch'   => self::PAGE_ROWS,
+			'tables'  => array(),
+			'skipped' => array(),
+			'reads'   => array(),
+			'charset' => '',
+			'done'    => false,
+		);
+	}
+
+	/**
+	 * Reads on from where $s says, in one consistent snapshot of this
+	 * request, until $out_of_time() says the slice is up. A table is read in
+	 * pages of $s['batch'] rows by its primary key (WHERE key > last ORDER BY
+	 * key), never by offset, which skips or repeats a row that moves between
+	 * pages. A table with no primary key is read whole, at the start of a
+	 * request. Each part ends at the end of a statement, and $save receives
+	 * the state as of the last part ended, so a request the host stops is
+	 * read again from there.
+	 *
+	 * @param array    $s           The state from split_state() or the last request.
+	 * @param callable $out_of_time Whether this request's slice is up.
+	 * @param callable $save        Receives the state after each part.
+	 * @return array The state; done once the footer is written.
+	 */
+	public function run_split( array $s, callable $out_of_time, callable $save ) {
+		$this->exec( 'SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ' );
+		$this->exec( "SET SESSION time_zone = '+00:00'" );
+		$this->exec( 'START TRANSACTION WITH CONSISTENT SNAPSHOT' );
+		$n            = count( $s['reads'] );
+		$s['reads'][] = array(
+			'request' => $n + 1,
+			'at'      => gmdate( 'Y-m-d\TH:i:s\Z' ),
+			'tables'  => array(),
+		);
+		try {
+			if ( null === $s['names'] ) {
+				$this->database       = (string) $this->scalar( 'SELECT DATABASE()' );
+				$this->server_version = (string) $this->scalar( 'SELECT VERSION()' );
+				$s['database']        = $this->database;
+				$s['server_version']  = $this->server_version;
+				$cs                  = $this->db->character_set_name();
+				$this->charset       = $cs ? $cs : $this->charset;
+				$s['charset']        = $this->charset;
+				$s['names']          = $this->table_names();
+				$s['sizes']          = $this->table_sizes();
+				$s['skipped']        = $this->skipped;
+				$this->part          = $s['part'];
+				$this->next_part();
+				$this->header();
+				$this->out->end_file();
+				$s['part'] = $this->part;
+				$save( $s );
+			}
+			$this->charset = '' !== $s['charset'] ? $s['charset'] : $this->charset;
+			$first         = true;
+			while ( $s['i'] < count( $s['names'] ) ) {
+				$name = $s['names'][ $s['i'] ];
+				if ( null === $s['table'] ) {
+					$s['table'] = array(
+						'started' => false,
+						'key'     => $this->primary_key( $name ),
+						'after'   => null,
+						'rows'    => 0,
+					);
+				}
+				$t = $s['table'];
+				if ( ! $t['key'] && ! $first ) {
+					break; // read whole, so at the start of a request of its own
+				}
+				$first = false;
+				$this->out->begin_file( self::part_name( $s['part'] ) );
+				if ( ! $t['started'] ) {
+					$this->structure( $name );
+					$t['started'] = true;
+				}
+				$from = $t['after'];
+				$had  = $t['rows'];
+				if ( $t['key'] ) {
+					$done = $this->dump_pages( $name, $t, max( 1, (int) $s['batch'] ), $out_of_time );
+				} else {
+					$t['rows'] = $this->dump_rows( $name );
+					$done      = true;
+				}
+				if ( $done ) {
+					$this->emit( "\n" );
+				}
+				$this->out->end_file();
+				++$s['part'];
+				$s['reads'][ $n ]['tables'][] = array(
+					'table' => $name,
+					'from'  => null === $from ? null : self::shorten( implode( ', ', $from ) ),
+					'to'    => $done || null === $t['after'] ? null : self::shorten( implode( ', ', $t['after'] ) ),
+					'rows'  => $t['rows'] - $had,
+				);
+				if ( $done ) {
+					$s['tables'][ $name ] = array(
+						'rows' => $t['rows'],
+						'size' => isset( $s['sizes'][ $name ] ) ? $s['sizes'][ $name ] : 0,
+					);
+					++$s['i'];
+					$s['table'] = null;
+				} else {
+					$s['table'] = $t;
+				}
+				$save( $s );
+				if ( $out_of_time() ) {
+					break;
+				}
+			}
+			if ( $s['i'] >= count( $s['names'] ) ) {
+				$s['attachments'] = $this->attachments();
+				$this->out->begin_file( self::part_name( $s['part'] ) );
+				$this->footer();
+				$this->out->end_file();
+				++$s['part'];
+				$s['done'] = true;
+				$save( $s );
+			}
+		} finally {
+			$this->db->query( 'COMMIT' );
+			$this->db->close();
+		}
+		return $s;
+	}
+
+	/** A key in the manifest's account of what each request read, cut short. */
+	private static function shorten( $s ) {
+		return strlen( $s ) > 120 ? substr( $s, 0, 117 ) . '...' : $s;
+	}
+
+	/** The name of the dump's part $n. Parts are numbered without a gap. */
+	private static function part_name( $n ) {
+		return 0 === $n ? 'mysql/dump.sql' : 'mysql/dump.sql.' . $n;
+	}
+
+	/**
+	 * The columns of $name's primary key, in key order, or an empty list
+	 * when it has none, or one the dump cannot read back (a generated column).
+	 */
+	private function primary_key( $name ) {
+		$res  = $this->query( 'SHOW KEYS FROM ' . $this->quote_name( $name ) . " WHERE Key_name = 'PRIMARY'" );
+		$cols = array();
+		while ( $row = $res->fetch_assoc() ) {
+			$cols[ (int) $row['Seq_in_index'] ] = $row['Column_name'];
+		}
+		$res->free();
+		ksort( $cols );
+		$select = $this->select_of( $name );
+		foreach ( $cols as $c ) {
+			if ( ! in_array( $c, $select['columns'], true ) ) {
+				return array();
+			}
+		}
+		return array_values( $cols );
+	}
+
+	private function header() {
+		$this->emit( "-- SafeGrd WordPress dump\n" );
+		$this->emit( '-- Database: ' . $this->database . "\n" );
+		$this->emit( '-- Server version: ' . $this->server_version . "\n\n" );
+		$this->emit( '/*!40101 SET NAMES ' . $this->charset . " */;\n" );
+		$this->emit( "/*!40103 SET TIME_ZONE='+00:00' */;\n" );
+		$this->emit( "/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;\n" );
+		$this->emit( "/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n" );
+		$this->emit( "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n\n" );
+	}
+
+	private function footer() {
+		$this->emit( "/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n" );
+		$this->emit( "/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n" );
+		$this->emit( "/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;\n\n" );
+		$this->emit( "-- Dump completed\n" );
+	}
+
+	private function attachments() {
+		return (int) $this->scalar(
+			'SELECT COUNT(*) FROM ' . $this->quote_name( $this->prefix . 'postmeta' ) . " WHERE meta_key = '_wp_attached_file'"
 		);
 	}
 
@@ -238,6 +426,14 @@ final class SafeGrd_Dumper {
 	}
 
 	private function dump_table( $name ) {
+		$this->structure( $name );
+		$rows = $this->dump_rows( $name );
+		$this->emit( "\n" );
+		return $rows;
+	}
+
+	/** The table's DROP and CREATE statements. */
+	private function structure( $name ) {
 		$qname  = $this->quote_name( $name );
 		$create = $this->query( 'SHOW CREATE TABLE ' . $qname )->fetch_row();
 		if ( empty( $create[1] ) ) {
@@ -246,7 +442,16 @@ final class SafeGrd_Dumper {
 		$this->emit( "--\n-- Table structure for table " . $qname . "\n--\n\n" );
 		$this->emit( 'DROP TABLE IF EXISTS ' . $qname . ";\n" );
 		$this->emit( $create[1] . ";\n\n" );
+	}
 
+	/**
+	 * What the dump reads of a table: the select list, the INSERT that
+	 * writes its rows, the condition on them, and the columns read.
+	 *
+	 * @return array{select:string,head:string,where:string,columns:array}
+	 */
+	private function select_of( $name ) {
+		$qname = $this->quote_name( $name );
 		// Generated columns cannot be inserted into; they are listed out and
 		// recomputed by the server on restore.
 		$columns   = array();
@@ -261,16 +466,77 @@ final class SafeGrd_Dumper {
 		}
 		$res->free();
 		$select = $generated ? implode( ', ', array_map( array( $this, 'quote_name' ), $columns ) ) : '*';
-		$head   = 'INSERT INTO ' . $qname . ( $generated ? ' (' . $select . ')' : '' ) . ' VALUES ';
-
-		$where = '';
+		$where  = '';
 		if ( $name === $this->prefix . 'options' ) {
 			// This plugin's own rows stay out: a restored site must not come
 			// back holding this site's node token.
-			$where = " WHERE option_name NOT LIKE 'safegrd\\_%' AND option_name NOT LIKE '\\_transient\\_safegrd\\_%' AND option_name NOT LIKE '\\_transient\\_timeout\\_safegrd\\_%'";
+			$where = "option_name NOT LIKE 'safegrd\\_%' AND option_name NOT LIKE '\\_transient\\_safegrd\\_%' AND option_name NOT LIKE '\\_transient\\_timeout\\_safegrd\\_%'";
 		}
+		return array(
+			'select'  => $select,
+			'head'    => 'INSERT INTO ' . $qname . ( $generated ? ' (' . $select . ')' : '' ) . ' VALUES ',
+			'where'   => $where,
+			'columns' => $columns,
+		);
+	}
 
-		$res = $this->db->query( 'SELECT ' . $select . ' FROM ' . $qname . $where, MYSQLI_USE_RESULT );
+	/** Writes every row of a table, as one stream. */
+	private function dump_rows( $name ) {
+		$q = $this->select_of( $name );
+		return $this->stream( $name, 'SELECT ' . $q['select'] . ' FROM ' . $this->quote_name( $name ) . ( '' === $q['where'] ? '' : ' WHERE ' . $q['where'] ), $q['head'] );
+	}
+
+	/**
+	 * Writes a table's rows a page at a time, by its primary key, from the
+	 * key after $t['after'], until the table ends or the slice is up. A page
+	 * is read whole, so the time it takes is what $batch bounds.
+	 *
+	 * @param string   $name        The table.
+	 * @param array    $t           Its state: key, after and rows, updated.
+	 * @param int      $batch       Rows a page holds.
+	 * @param callable $out_of_time Whether the slice is up.
+	 * @return bool Whether the table is done.
+	 */
+	private function dump_pages( $name, array &$t, $batch, callable $out_of_time ) {
+		$q     = $this->select_of( $name );
+		$keys  = array_map( array( $this, 'quote_name' ), $t['key'] );
+		$tuple = count( $keys ) > 1 ? '(' . implode( ', ', $keys ) . ')' : $keys[0];
+		$at    = array();
+		foreach ( $t['key'] as $k ) {
+			$at[] = array_search( $k, $q['columns'], true );
+		}
+		while ( true ) {
+			$where = array();
+			if ( '' !== $q['where'] ) {
+				$where[] = $q['where'];
+			}
+			if ( null !== $t['after'] ) {
+				$where[] = $tuple . ' > ' . ( count( $keys ) > 1 ? '(' . implode( ', ', $t['after'] ) . ')' : $t['after'][0] );
+			}
+			$sql   = 'SELECT ' . $q['select'] . ' FROM ' . $this->quote_name( $name ) . ( $where ? ' WHERE ' . implode( ' AND ', $where ) : '' ) .
+				' ORDER BY ' . implode( ', ', $keys ) . ' LIMIT ' . (int) $batch;
+			$last  = null;
+			$rows  = $this->stream( $name, $sql, $q['head'], $at, $last );
+			$t['rows'] += $rows;
+			if ( null !== $last ) {
+				$t['after'] = $last;
+			}
+			if ( $rows < $batch ) {
+				return true;
+			}
+			if ( $out_of_time() ) {
+				return false;
+			}
+		}
+	}
+
+	/**
+	 * Runs $sql unbuffered and writes its rows as INSERT statements of about
+	 * STATEMENT_BYTES each. $at names the key's columns by position, and
+	 * $last receives the last row's key as SQL literals.
+	 */
+	private function stream( $name, $sql, $head, array $at = array(), &$last = null ) {
+		$res = $this->db->query( $sql, MYSQLI_USE_RESULT );
 		if ( false === $res ) {
 			throw new SafeGrd_Exception( esc_html( sprintf( 'Could not read %s: %s', $name, $this->db->error ) ), 'source' );
 		}
@@ -284,6 +550,12 @@ final class SafeGrd_Dumper {
 			$values = array();
 			foreach ( $row as $i => $v ) {
 				$values[] = $this->value( $v, $kinds[ $i ] );
+			}
+			if ( $at ) {
+				$last = array();
+				foreach ( $at as $i ) {
+					$last[] = $values[ $i ];
+				}
 			}
 			$tuple = '(' . implode( ',', $values ) . ')';
 			if ( '' === $stmt ) {
@@ -305,7 +577,6 @@ final class SafeGrd_Dumper {
 		if ( '' !== $stmt ) {
 			$this->emit( $stmt . ";\n" );
 		}
-		$this->emit( "\n" );
 		return $rows;
 	}
 
@@ -348,7 +619,7 @@ final class SafeGrd_Dumper {
 		if ( $this->part > 0 ) {
 			$this->out->end_file();
 		}
-		$this->out->begin_file( 0 === $this->part ? 'mysql/dump.sql' : 'mysql/dump.sql.' . $this->part );
+		$this->out->begin_file( self::part_name( $this->part ) );
 		$this->part++;
 	}
 

@@ -393,11 +393,17 @@ final class SafeGrd_Backup {
 	private function work() {
 		$this->job['slices']++;
 		if ( 'database' === $this->job['stage'] ) {
-			$this->say( 'Dumping the database' );
-			update_option( self::DOING, 'dumping the database, which has to be read in one request to stay one consistent snapshot', false );
-			// A dump a stopped slice began is done again from the start.
-			SafeGrd_Repo_Cache::forget_run( $this->job['epoch_id'], $this->job['run_id'] );
-			$this->job['db'] = ( new SafeGrd_Dumper( $this ) )->run();
+			if ( self::split( $this->job['db'] ) ) {
+				if ( ! $this->dump_split() ) {
+					return false;
+				}
+			} else {
+				$this->say( 'Dumping the database' );
+				update_option( self::DOING, 'dumping the database in one consistent snapshot', false );
+				// A dump a stopped slice began is done again from the start.
+				SafeGrd_Repo_Cache::forget_run( $this->job['epoch_id'], $this->job['run_id'] );
+				$this->job['db'] = ( new SafeGrd_Dumper( $this ) )->run();
+			}
 			foreach ( $this->job['db']['skipped'] as $s ) {
 				$this->skip( $s );
 			}
@@ -429,6 +435,68 @@ final class SafeGrd_Backup {
 
 	private function out_of_time() {
 		return $this->deadline > 0 && microtime( true ) >= $this->deadline;
+	}
+
+	/** How long a request here may run, in words. */
+	private static function request_limit() {
+		return 0 === (int) ini_get( 'max_execution_time' ) ? 'as long as the host allows' : (int) ini_get( 'max_execution_time' ) . ' seconds';
+	}
+
+	/** Whether a job's dump goes table by table across requests. */
+	private static function split( $db ) {
+		return is_array( $db ) && 'split' === ( $db['mode'] ?? '' );
+	}
+
+	/**
+	 * Reads the next tables of a dump that goes table by table, in this
+	 * request's own consistent snapshot, until the slice is up.
+	 *
+	 * @return bool Whether the dump is done.
+	 */
+	private function dump_split() {
+		$db = $this->job['db'];
+		$at = $db['i'] < count( (array) $db['names'] ) ? $db['names'][ $db['i'] ] : '';
+		$this->say( null === $db['names'] ? 'Dumping the database table by table' : 'Dumping the database from ' . $at . ( empty( $db['table']['after'] ) ? '' : ', after key ' . implode( ', ', $db['table']['after'] ) ) );
+		update_option( self::DOING, '' === $at ? 'dumping the database table by table' : 'dumping table ' . $at, false );
+		// Where this request starts, so a request the host stops can tell
+		// whether it read anything.
+		$this->job['db']['mark'] = array( $db['i'], $db['table']['after'] ?? null );
+		$this->save_job();
+		$this->job['db'] = ( new SafeGrd_Dumper( $this ) )->run_split(
+			$this->job['db'],
+			function () {
+				return $this->out_of_time();
+			},
+			function ( $s ) {
+				// The state as of the last part ended. The job is saved with
+				// the parts' rows when their pack is stored (flush_pack), so
+				// a saved state never names a part that is not.
+				$this->job['db'] = $s;
+			}
+		);
+		delete_option( self::DOING );
+		if ( empty( $this->job['db']['done'] ) ) {
+			$this->say( sprintf( 'Read %d of %d tables; the next request goes on from there', $this->job['db']['i'], count( $this->job['db']['names'] ) ) );
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Says how a dump read table by table was taken: across how many
+	 * requests, from when to when, and how to get one snapshot instead.
+	 */
+	private static function split_note( array $db ) {
+		$reads = (array) ( $db['reads'] ?? array() );
+		$first = $reads ? strtotime( $reads[0]['at'] ) : time();
+		$last  = $reads ? strtotime( $reads[ count( $reads ) - 1 ]['at'] ) : time();
+		return sprintf(
+			'The database was read table by table in %d requests, from %s to %s UTC, because this host stops a request before the whole dump is read. Its tables were read at different moments, not as one snapshot. For one consistent snapshot, back up from the host\'s cron with WP-CLI, which has no time limit: %s',
+			count( $reads ),
+			gmdate( 'H:i:s', $first ),
+			gmdate( 'H:i:s', $last ),
+			SafeGrd_Scheduler::backup_cron_line()
+		);
 	}
 
 	/**
@@ -925,6 +993,17 @@ final class SafeGrd_Backup {
 			'total_containers' => count( $table_stats ),
 			'wordpress'        => $wordpress,
 		);
+		if ( self::split( $db ) ) {
+			$reads         = (array) $db['reads'];
+			$meta['notes'] = array(
+				'database' => sprintf(
+					'read table by table in %d requests, %s to %s UTC, not as one snapshot',
+					count( $reads ),
+					gmdate( 'H:i:s', strtotime( $reads[0]['at'] ) ),
+					gmdate( 'H:i:s', strtotime( $reads[ count( $reads ) - 1 ]['at'] ) )
+				),
+			);
+		}
 		// The trees' files, first, so the manifest can say what each part holds.
 		$rows = SafeGrd_Repo_Cache::run_files( $job['epoch_id'], $job['run_id'] );
 
@@ -933,6 +1012,11 @@ final class SafeGrd_Backup {
 		// The server is sent $meta without it.
 		$manifest               = $meta;
 		$manifest['components'] = self::components( $rows, $db );
+		if ( self::split( $db ) ) {
+			// Which tables, and which keys of them, each request read, and
+			// when: each request read its own consistent snapshot.
+			$manifest['database_reads'] = $db['reads'];
+		}
 		$this->put_file( 'manifest.json', SafeGrd_Repo_Format::json( $manifest ) );
 		$this->checkpoint();
 		$rows = SafeGrd_Repo_Cache::run_files( $job['epoch_id'], $job['run_id'] );
@@ -1101,17 +1185,22 @@ final class SafeGrd_Backup {
 		SafeGrd_Repo_Cache::mark_committed( $job['epoch_id'], $job['run_id'] );
 
 		$message = '';
-		$rec     = $this->client->call( 'POST', '/api/v1/snapshots', $meta );
+		if ( self::split( $db ) ) {
+			$message = self::split_note( $db );
+			$this->say( 'Warning: ' . $message );
+		}
+		$rec = $this->client->call( 'POST', '/api/v1/snapshots', $meta );
 		if ( is_wp_error( $rec ) ) {
 			// The backup is stored and restorable; the console just does not
 			// know about it, and so never test-restores it. Said on every
 			// surface the run is shown, and sent again when that may help.
-			$message = 'Stored, but the server did not record it: ' . $rec->get_error_message();
+			$failed = 'Stored, but the server did not record it: ' . $rec->get_error_message();
 			if ( self::worth_resending( $rec ) ) {
 				self::keep_unsent( $meta );
-				$message .= ' The record is sent again with the next backup.';
+				$failed .= ' The record is sent again with the next backup.';
 			}
-			$this->say( 'Warning: ' . $message );
+			$this->say( 'Warning: ' . $failed );
+			$message = trim( $failed . ' ' . $message );
 		}
 		$this->heartbeat( $job['snapshot_id'], '' );
 		return array(
@@ -1132,6 +1221,7 @@ final class SafeGrd_Backup {
 			'class'       => $job['class'],
 			'skipped'     => $job['skipped'],
 			'message'     => $message,
+			'split_note'  => self::split( $db ) ? self::split_note( $db ) : '',
 			'label'       => (string) ( $job['label'] ?? '' ),
 			'peak_memory' => memory_get_peak_usage( true ),
 		);
@@ -1308,7 +1398,7 @@ final class SafeGrd_Backup {
 			// The last run's "did not record it" is no longer true.
 			$last = SafeGrd_Settings::last_run();
 			if ( ( $last['snapshot_id'] ?? '' ) === $id && 0 === strpos( (string) ( $last['message'] ?? '' ), 'Stored, but the server did not record it' ) ) {
-				$last['message'] = '';
+				$last['message'] = (string) ( $last['split_note'] ?? '' );
 				SafeGrd_Settings::record_run( $last );
 			}
 		}
@@ -1389,7 +1479,39 @@ final class SafeGrd_Backup {
 	 * @throws SafeGrd_Exception When the run has to fail.
 	 */
 	private function note_death() {
+		if ( 'database' === $this->job['stage'] && ! self::split( $this->job['db'] ?? null ) ) {
+			// The dump did not fit in one request. It goes on table by table,
+			// each request in a consistent snapshot of its own; the parts the
+			// stopped request stored are read again.
+			SafeGrd_Repo_Cache::forget_run( $this->job['epoch_id'], $this->job['run_id'] );
+			$this->job['db'] = SafeGrd_Dumper::split_state();
+			delete_option( self::DOING );
+			$this->save_job();
+			$this->say(
+				sprintf(
+					'Warning: the host stopped the request dumping the database before it finished (a request here may run %s). The dump goes on table by table across requests, so its tables are read at different moments. For one consistent snapshot, back up from the host\'s cron with WP-CLI, which has no time limit: %s',
+					self::request_limit(),
+					SafeGrd_Scheduler::backup_cron_line()
+				)
+			);
+			return;
+		}
+		$split = 'database' === $this->job['stage'] ? $this->job['db'] : null;
+		if ( $split ) {
+			// A request that read nothing before the host stopped it reads
+			// smaller pages next time.
+			$here = array( $split['i'], $split['table']['after'] ?? null );
+			if ( ( $split['mark'] ?? null ) === $here && ! empty( $split['table']['key'] ) && $split['batch'] > 1 ) {
+				$this->job['db']['batch'] = max( 1, intdiv( (int) $split['batch'], 4 ) );
+				$this->save_job();
+				$this->say( sprintf( 'Warning: the host stopped a request that read nothing of %s. The next reads %d rows a page.', $split['names'][ $split['i'] ], $this->job['db']['batch'] ) );
+				return;
+			}
+		}
 		$at = $this->job['stage'] . '|' . (string) $this->job['cursor'] . '|' . (string) ( $this->job['partial']['offset'] ?? '' ) . '|' . ( empty( $this->job['finishing'] ) ? '' : 'finish' );
+		if ( $split ) {
+			$at .= '|' . wp_json_encode( array( $split['i'], $split['table']['after'] ?? null, $split['batch'] ) );
+		}
 		if ( ( $this->job['died_at'] ?? '' ) === $at ) {
 			$this->job['deaths'] = (int) ( $this->job['deaths'] ?? 0 ) + 1;
 		} else {
@@ -1404,13 +1526,19 @@ final class SafeGrd_Backup {
 		$this->say( sprintf( 'Warning: the host stopped the last slice before it finished, while %s (%d of %d times at this point).', $doing, $this->job['deaths'], self::DEATHS ) );
 		if ( $this->job['deaths'] >= self::DEATHS ) {
 			delete_option( self::DOING );
+			$why = '';
+			if ( $split && isset( $split['names'][ $split['i'] ] ) && empty( $split['table']['key'] ) && null !== $split['table'] ) {
+				$why = sprintf( ' %s has no primary key, so it is read whole in one request.', $split['names'][ $split['i'] ] );
+			}
 			throw new SafeGrd_Exception(
 				esc_html(
 					sprintf(
-						'The host stopped the backup %d times at the same point, while %s. A request here may run %s. Run the backup from the server\'s cron, where PHP has no time limit: wp safegrd backup.',
+						'The host stopped the backup %d times at the same point, while %s.%s A request here may run %s. Back up from the host\'s cron with WP-CLI, where PHP has no time limit: %s',
 						$this->job['deaths'],
 						$doing,
-						0 === (int) ini_get( 'max_execution_time' ) ? 'as long as the host allows' : (int) ini_get( 'max_execution_time' ) . ' seconds'
+						$why,
+						self::request_limit(),
+						SafeGrd_Scheduler::backup_cron_line()
 					)
 				),
 				'other'

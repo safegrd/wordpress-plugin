@@ -229,6 +229,15 @@ final class SafeGrd_Scheduler {
 	}
 
 	/**
+	 * The line for the host's cron that backs the site up with WP-CLI, where
+	 * PHP has no request time limit, so the database is read in one
+	 * consistent snapshot however large it is.
+	 */
+	public static function backup_cron_line() {
+		return sprintf( '17 3 * * * cd %s && wp safegrd backup --quiet', untrailingslashit( ABSPATH ) );
+	}
+
+	/**
 	 * What to do about a site that cannot reach itself.
 	 *
 	 * @param bool $page Whether it is said on the Tools page, which runs

@@ -7,7 +7,7 @@
  *
  * Layout of a run (paths from the snapshot's root):
  *
- *   mysql/dump.sql, mysql/dump.sql.1, ...  the dump: a header, one part per table, a footer
+ *   mysql/dump.sql, mysql/dump.sql.1, ...  the dump: a header, a part per table (or several, for a dump read across requests), a footer
  *   files/<path>                           wp-config.php, .htaccess and the content directory
  *   manifest.json                          the snapshot's metadata
  *

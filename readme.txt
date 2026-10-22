@@ -25,7 +25,7 @@ There is a free plan. What each plan includes is on [safegrd.dev/pricing](https:
 * Back up the database, `wp-config.php`, `.htaccess` and `wp-content` daily or weekly, at the hour you choose.
 * Back up before a plugin, theme or core update, from wp-admin, WP-CLI or automatic updates. You turn it on under Settings.
 * See how old your last backup is on the Updates, Plugins and Themes screens, with Back up now.
-* WooCommerce orders and customers are included, read in one consistent snapshot with the rest of the database.
+* WooCommerce orders and customers are included, read in one consistent snapshot with the rest of the database. On a host that stops a request before a large database is read, see the FAQ below.
 * After the first backup, only what changed is uploaded.
 * Leave out large files by path or by name, such as `*.zip`.
 * Each backup is encrypted on your server before it leaves. In SafeGrd-hosted storage, or your own bucket with Object Lock on, it cannot be deleted before its lock date.
@@ -92,6 +92,14 @@ Yes. Install WordPress and this plugin on the new host, connect to the same acco
 = Where are the backups stored? =
 
 In SafeGrd-hosted storage, or in your own S3 bucket, with or without Object Lock. Either way they are encrypted on your server first.
+
+= My host stops long requests and my database is large. What happens? =
+
+The plugin first reads the whole database in one consistent snapshot. If the host stops that request, it reads the database table by table across several requests, and a large table a page of rows at a time. Each request reads its own snapshot, so tables are read at different moments. When that happens, the backup's log and Tools > SafeGrd say so.
+
+For one consistent snapshot of a large site, run the backup from your host's cron with WP-CLI, which has no time limit. The same message gives the line for your site, such as:
+
+`17 3 * * * cd /path/to/your/site && wp safegrd backup --quiet`
 
 = Does it back up multisite? =
 
