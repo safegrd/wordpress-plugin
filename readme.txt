@@ -28,7 +28,7 @@ There is a free plan. What each plan includes is on [safegrd.dev/pricing](https:
 * WooCommerce orders and customers are included, read in one consistent snapshot with the rest of the database.
 * After the first backup, only what changed is uploaded.
 * Leave out large files by path or by name, such as `*.zip`.
-* Each backup is encrypted on your server before it leaves, and stored where it cannot be deleted before its lock date.
+* Each backup is encrypted on your server before it leaves. In SafeGrd-hosted storage, or your own bucket with Object Lock on, it cannot be deleted before its lock date.
 * Works on shared hosting that stops long requests. The plugin is PHP only and needs nothing installed beside WordPress.
 * Keep your current backup plugin while you try it. SafeGrd leaves other backup plugins' archives out of its backups.
 
@@ -56,7 +56,7 @@ Tools > SafeGrd shows the date and result of the last test restore. To get an al
 
 = Storage and keys =
 
-Backups go to SafeGrd-hosted storage, or to your own S3 bucket with Object Lock on. You choose how your key is managed when you connect:
+Backups go to SafeGrd-hosted storage, or to your own S3 bucket. In a bucket you set up without Object Lock, backups are not locked and stay until you or the bucket's lifecycle rules delete them. You choose how your key is managed when you connect:
 
 * **SafeGrd-managed key** (the default): SafeGrd keeps your key sealed and releases it only to your enrolled hosts, so you can restore even after losing this site.
 * **Customer-managed key**: only you can decrypt these backups. Keep a copy of the key somewhere safe, such as a password manager.
@@ -91,7 +91,7 @@ Yes. Install WordPress and this plugin on the new host, connect to the same acco
 
 = Where are the backups stored? =
 
-In SafeGrd-hosted storage, or in your own S3 bucket with Object Lock on. Either way they are encrypted on your server first.
+In SafeGrd-hosted storage, or in your own S3 bucket, with or without Object Lock. Either way they are encrypted on your server first.
 
 = Does it back up multisite? =
 

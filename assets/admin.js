@@ -225,7 +225,7 @@
 		}
 		var table = el("table", "widefat striped");
 		var head = table.createTHead().insertRow();
-		["Taken", "Kind", "Site size", "Uploaded", "Status", "Locked until", ""].forEach(function (h) {
+		["Taken", "Kind", "Site size", "Uploaded", "Status", "Lock", ""].forEach(function (h) {
 			head.appendChild(el("th", "", h));
 		});
 		var body = table.createTBody();

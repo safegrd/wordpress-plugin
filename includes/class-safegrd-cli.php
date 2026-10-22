@@ -147,7 +147,9 @@ final class SafeGrd_CLI {
 		WP_CLI::line( sprintf( '   Files:     %d (%s)', $run['files'], size_format( $run['raw_bytes'], 1 ) ) );
 		WP_CLI::line( sprintf( '   Slices:    %d', $run['slices'] ) );
 		WP_CLI::line( sprintf( '   Memory:    %s peak', size_format( $run['peak_memory'], 1 ) ) );
-		if ( ! empty( $run['retain'] ) ) {
+		if ( ! empty( $run['unlocked'] ) ) {
+			WP_CLI::line( '   Not locked: your bucket has no Object Lock' );
+		} elseif ( ! empty( $run['retain'] ) ) {
 			WP_CLI::line( '   Locked until ' . substr( $run['retain'], 0, 10 ) . ( empty( $run['kept'] ) ? '' : ', kept until ' . substr( $run['kept'], 0, 10 ) ) );
 		}
 		foreach ( array_slice( (array) $run['skipped'], 0, 20 ) as $s ) {

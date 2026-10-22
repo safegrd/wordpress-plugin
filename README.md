@@ -1,8 +1,8 @@
 # SafeGrd Backup for WordPress
 
 Backs up a WordPress site's database and files to [SafeGrd](https://safegrd.dev), encrypted on
-your server before they leave it, into storage locked against deletion. SafeGrd test-restores
-the newest backup on your plan's schedule and records each result. The free plan covers one
+your server before they leave it, into storage locked against deletion or into your own bucket.
+SafeGrd test-restores the newest backup on your plan's schedule and records each result. The free plan covers one
 site; [safegrd.dev/pricing](https://safegrd.dev/pricing) lists what each plan includes.
 
 It is written in PHP and needs nothing installed beside WordPress, so it runs on shared and

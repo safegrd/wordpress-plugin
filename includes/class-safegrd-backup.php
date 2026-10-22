@@ -281,6 +281,9 @@ final class SafeGrd_Backup {
 		// Hosted storage may keep a backup past its lock: then the epoch
 		// holds that one backup, and keeps it t_mid_days from when it opened.
 		$kept  = max( $lock, strtotime( $epoch['opened_at'] ?? 'now' ) + (int) ( $epoch['t_mid_days'] ?? 0 ) * DAY_IN_SECONDS );
+		// Your own bucket without Object Lock: nothing locks the run, so it
+		// has no lock date to show.
+		$unlocked  = 'NONE' === strtoupper( (string) ( $info['worm_mode'] ?? '' ) );
 		$this->job = array(
 			'snapshot_id' => 'snap-' . gmdate( 'Ymd-His', $now ) . '-' . substr( bin2hex( random_bytes( 4 ) ), 0, 6 ),
 			'run_id'      => bin2hex( random_bytes( 16 ) ),
@@ -294,9 +297,10 @@ final class SafeGrd_Backup {
 			// for this class, which outlasts the plan's retention. This is
 			// the date to show, as the server records it; retain is when the
 			// snapshot itself expires.
-			'locked'      => $lock,
+			'locked'      => $unlocked ? null : $lock,
+			'unlocked'    => $unlocked,
 			// When hosted storage deletes it, when that is after the lock.
-			'kept'        => $kept > $lock ? $kept : null,
+			'kept'        => ! $unlocked && $kept > $lock ? $kept : null,
 			'started'     => $now,
 			'stage'       => 'database',
 			'cursor'      => null,
@@ -1076,7 +1080,7 @@ final class SafeGrd_Backup {
 				'encrypted_sha256'     => '',
 				'storage_uri'          => $job['storage_uri'],
 				'worm_mode'            => $job['worm_mode'],
-				'worm_retention_until' => SafeGrd_Repo_Format::rfc3339( $job['locked'] ?? $job['retain'] ),
+				'worm_retention_until' => empty( $job['unlocked'] ) ? SafeGrd_Repo_Format::rfc3339( $job['locked'] ?? $job['retain'] ) : null,
 				'duration_ms'          => ( $now - $job['started'] ) * 1000,
 				'format'               => 'repo-v1',
 				'epoch_id'             => $job['epoch_id'],
@@ -1122,8 +1126,9 @@ final class SafeGrd_Backup {
 			'tables'      => count( $table_stats ),
 			'rows'        => $rows_total,
 			'files'       => $job['files'],
-			'retain'      => SafeGrd_Repo_Format::rfc3339( $job['locked'] ?? $job['retain'] ),
+			'retain'      => empty( $job['unlocked'] ) ? SafeGrd_Repo_Format::rfc3339( $job['locked'] ?? $job['retain'] ) : '',
 			'kept'        => empty( $job['kept'] ) ? '' : SafeGrd_Repo_Format::rfc3339( $job['kept'] ),
+			'unlocked'    => ! empty( $job['unlocked'] ),
 			'class'       => $job['class'],
 			'skipped'     => $job['skipped'],
 			'message'     => $message,
@@ -1361,7 +1366,9 @@ final class SafeGrd_Backup {
 				$failed['object_class']         = $this->job['class'];
 				$failed['format']               = 'repo-v1';
 				$failed['worm_mode']            = $this->job['worm_mode'];
-				$failed['worm_retention_until'] = SafeGrd_Repo_Format::rfc3339( $this->job['locked'] ?? $this->job['retain'] );
+				if ( empty( $this->job['unlocked'] ) ) {
+					$failed['worm_retention_until'] = SafeGrd_Repo_Format::rfc3339( $this->job['locked'] ?? $this->job['retain'] );
+				}
 			}
 			$rec = $this->client->call( 'POST', '/api/v1/snapshots', $failed );
 			if ( is_wp_error( $rec ) ) {
@@ -1487,12 +1494,13 @@ final class SafeGrd_Backup {
 		if ( ! empty( $info['bucket'] ) ) {
 			// The project's own bucket: SafeGrd signs each request with the
 			// key it holds for it, and meters none of it.
+			$held = 'SafeGrd holds this bucket\'s key, encrypted, and uses it only to sign this site\'s uploads and reads, so the site holds no storage key.';
+			$mode = strtoupper( (string) ( $info['worm_mode'] ?? 'COMPLIANCE' ) );
 			return array(
 				'line'    => 'Your own bucket, ' . $info['bucket'],
-				'where'   => sprintf(
-					'Object Lock in %s mode keeps each backup until its date. SafeGrd holds this bucket\'s key, encrypted, and uses it only to sign this site\'s uploads and reads, so the site holds no storage key.',
-					strtolower( (string) ( $info['worm_mode'] ?? 'compliance' ) )
-				),
+				'where'   => 'NONE' === $mode
+					? 'You set this bucket up without Object Lock, so backups stay in it until you or its lifecycle rules delete them. ' . $held
+					: sprintf( 'Object Lock in %s mode keeps each backup until its date. %s', strtolower( $mode ), $held ),
 				'warning' => $warning,
 				'used'    => 0,
 				'quota'   => 0,

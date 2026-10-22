@@ -157,7 +157,8 @@ final class SafeGrd_Admin {
 		$refusal = SafeGrd_Site::refusal();
 		echo '<div class="wrap safegrd">';
 		echo '<h1>SafeGrd Backup</h1>';
-		echo '<p class="safegrd-lede">Backs up this site\'s database and files, encrypted on this server before they leave it, to storage locked against deletion. SafeGrd test-restores the newest backup on your plan\'s schedule and records the result.</p>';
+		$last = SafeGrd_Settings::last_run();
+		echo '<p class="safegrd-lede">Backs up this site\'s database and files, encrypted on this server before they leave it, ' . ( empty( $last['unlocked'] ) ? 'to storage locked against deletion' : 'to your own bucket' ) . '. SafeGrd test-restores the newest backup on your plan\'s schedule and records the result.</p>';
 		if ( '' !== $refusal ) {
 			echo '<div class="notice notice-error inline"><p>' . esc_html( $refusal ) . '</p></div></div>';
 			return;
@@ -617,7 +618,9 @@ final class SafeGrd_Admin {
 					esc_html( size_format( (int) $run['bytes'], 1 ) ),
 					esc_html( (string) $run['seconds'] )
 				);
-				if ( ! empty( $run['retain'] ) ) {
+				if ( ! empty( $run['unlocked'] ) ) {
+					$s .= ' Not locked: your bucket has no Object Lock.';
+				} elseif ( ! empty( $run['retain'] ) ) {
 					$s .= ' Locked until ' . esc_html( substr( $run['retain'], 0, 10 ) ) . ( empty( $run['kept'] ) ? '' : ', kept until ' . esc_html( substr( $run['kept'], 0, 10 ) ) ) . '.';
 				}
 				$label = SafeGrd_Updates::label( (string) ( $run['snapshot_id'] ?? '' ) );
@@ -665,7 +668,7 @@ final class SafeGrd_Admin {
 		if ( $t && time() - $t > 2 * ( 'weekly' === SafeGrd_Scheduler::frequency() ? WEEK_IN_SECONDS : DAY_IN_SECONDS ) ) {
 			return array( 'warning', 'No backup for ' . human_time_diff( $t ) . '.', 'This site backs up ' . SafeGrd_Scheduler::frequency() . '. Check the loopback notice above, if there is one, or press Back up now.' );
 		}
-		return array( 'success', 'Protected.', 'Backed up ' . human_time_diff( $t ) . ' ago, encrypted and locked against deletion.' );
+		return array( 'success', 'Protected.', 'Backed up ' . human_time_diff( $t ) . ' ago, ' . ( empty( $run['unlocked'] ) ? 'encrypted and locked against deletion.' : 'encrypted, in your own bucket.' ) );
 	}
 
 	private static function when( $iso ) {
@@ -838,7 +841,7 @@ final class SafeGrd_Admin {
 						'size'    => size_format( (int) ( $s['encrypted_size_bytes'] ?? 0 ), 1 ),
 						'site'    => size_format( (int) ( $s['raw_size_bytes'] ?? 0 ), 1 ),
 						'kind'    => ! empty( $s['storage_kept_until'] ) ? 'Full copy' : ( 'opening' === ( $s['object_class'] ?? '' ) ? 'Full, the month\'s first' : ( 'later' === ( $s['object_class'] ?? '' ) ? 'Changes only' : '' ) ),
-						'locked'  => substr( (string) ( $s['worm_retention_until'] ?? '' ), 0, 10 ) . ( empty( $s['storage_kept_until'] ) ? '' : ', kept until ' . substr( (string) $s['storage_kept_until'], 0, 10 ) ),
+						'locked'  => 'NONE' === strtoupper( (string) ( $s['worm_mode'] ?? '' ) ) ? 'Not locked' : ( empty( $s['worm_retention_until'] ) ? '' : 'Until ' . substr( (string) $s['worm_retention_until'], 0, 10 ) ) . ( empty( $s['storage_kept_until'] ) ? '' : ', kept until ' . substr( (string) $s['storage_kept_until'], 0, 10 ) ),
 						'log'     => isset( $logs[ $s['snapshot_id'] ?? '' ] ),
 						'label'   => $labels[ $s['snapshot_id'] ?? '' ] ?? '',
 					);
