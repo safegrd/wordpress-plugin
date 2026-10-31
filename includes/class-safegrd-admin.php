@@ -375,7 +375,7 @@ final class SafeGrd_Admin {
 					&middot; <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/contact' ); ?>" target="_blank" rel="noopener">Contact support</a>
 					&middot; <a href="mailto:support@safegrd.dev">support@safegrd.dev</a>
 				</p>
-				<p>Email and Slack alerts for a failed backup or test restore are set in the SafeGrd console, under <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/dashboard#settings' ); ?>" target="_blank" rel="noopener">Settings, Alerts</a>.</p>
+				<p>Alerts for a failed backup or test restore (Slack, Microsoft Teams, Discord, PagerDuty, a webhook URL, or email on a paid plan) are set in the SafeGrd console, under <a href="<?php echo esc_url( SafeGrd_Settings::server_url() . '/dashboard#settings' ); ?>" target="_blank" rel="noopener">Settings, Alerts</a>.</p>
 				<p class="description">Support asks for these first. They hold no token or key.</p>
 				<textarea readonly rows="6" class="large-text code" id="safegrd-diagnostics"><?php echo esc_textarea( self::diagnostics() ); ?></textarea>
 				<p><button type="button" class="button" id="safegrd-copy-diagnostics">Copy diagnostics</button></p>
